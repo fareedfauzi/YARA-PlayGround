@@ -14,9 +14,16 @@ A toolkit for threat researchers to manage YARA rules, write signatures, and sca
 
 ---
 
-## Quick Start
+## Installation
 
-Run the application with:
+1. **Python**: Make sure you have Python 3.11+ installed.
+2. **Library Setup**: Install the required tools:
+
+```powershell
+pip install -r requirements.txt
+```
+
+1. **Run**:
 
 ```powershell
 python Scripts/yara_playground.py
@@ -114,23 +121,6 @@ You can customize the app settings in the `config/` folder:
 | **Fixed Rules/** | Rules that were successfully repaired. |
 | **Downloaded Public Rules/** | Raw rules from external sources. |
 | **config/** | Settings and API configurations. |
-
----
-
-## Installation
-
-1. **Python**: Make sure you have Python 3.11+ installed.
-2. **Library Setup**: Install the required tools:
-
-```powershell
-pip install -r requirements.txt
-```
-
-1. **Run**:
-
-```powershell
-python Scripts/yara_playground.py
-```
 
 ---
 
