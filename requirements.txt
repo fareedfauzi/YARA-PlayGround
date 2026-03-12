@@ -1,0 +1,5 @@
+customtkinter
+yara-python
+requests
+tkinterdnd2
+pyinstaller
