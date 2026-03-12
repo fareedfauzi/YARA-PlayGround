@@ -1508,13 +1508,22 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         threading.Thread(target=task, daemon=True).start()
 
     def run_batch_scan(self):
-        if self.is_scanning: return
-        rules = self.lab_check_syntax(silent=True)
-        if not rules: return
+        if self.is_scanning: 
+            messagebox.showinfo("Scanner Busy", "A scan is already in progress. Please wait.")
+            return
+
+        # 1. Syntax Check with Feedback
+        rules = self.lab_check_syntax(silent=False)
+        if not rules: 
+            self.lab_status.configure(text="ERROR: Cannot scan with invalid rules", text_color=CLR_ERROR)
+            return
         
+        # 2. Folder Validation
         folder = self.lab_path.get()
-        if not os.path.isdir(folder) or folder == "Select batch target folder":
-            self.update_status("Error: Select valid folder", "error")
+        placeholder = "Select target folder containing samples..."
+        if not os.path.isdir(folder) or folder == placeholder:
+            self.update_status("Error: Select a valid target folder", "error")
+            messagebox.showwarning("Target Required", "Please select a valid folder containing files to scan.")
             return
 
         self.is_scanning = True
@@ -1536,6 +1545,8 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             try:
                 f_paths = [p for p in Path(folder).rglob("*") if p.is_file()]
                 total = len(f_paths)
+                self.after(0, lambda: self.log_to_textbox(self.summary_box, f"[*] Found {total} files. Starting scan...\n"))
+                
                 hits_total = 0
                 clean_count = 0
                 clean_files_list = []
@@ -1580,7 +1591,12 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     for r, count in hit_rank:
                         self.log_to_textbox(self.summary_box, f"  - {r}: {count} hits\n")
                     
-                    self.update_status(f"Scan Complete: {hits_total} hits / {total} files", "ok")
+                    if hits_total == 0:
+                        self.after(0, lambda: self.res_view.set("Summary"))
+                        self.update_status(f"Scan Complete: No hits found in {total} files", "ok")
+                    else:
+                        self.update_status(f"Scan Complete: {hits_total} hits / {total} files", "ok")
+                    
                     self.lab_status.configure(text=f"FINISHED: {hits_total} hits found", text_color="#2ECC71")
 
                 self.after(0, finalize)
