@@ -53,8 +53,7 @@ Write and test your rules in one place.
 - **Batch Test**: Run your rule against many files at once to see if the detection works.
 - **AI Fix**: Uses AI to automatically fix broken rules.
 
-<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/8f7573ef-4f09-41a8-a7cc-5999fc29d045" />
-
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/8ffb4aa4-ca1e-4280-8e77-b02f02d13b6e" />
 
 ### YARA Collector
 
