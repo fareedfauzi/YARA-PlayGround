@@ -35,7 +35,8 @@ Scan files or folders using collected thousands of YARA rules.
 - **Fast Scanning**: Choose a folder and see threats instantly.
 - **Smart View**: Click a match to see the exact code that found the threat.
 
-<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/36c4c6f9-19c1-48b8-ada8-bb845386c9ec" />
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/0716cb70-9c9a-4950-8476-67d1ff5983fd" />
+
 
 
 ### YARA Editor and Tester (Lab)
@@ -57,7 +58,8 @@ Keep your rules organized and up to date.
 - **Rule Cleanup**: Finds broken rules and moves them so they don't stop the scanner.
 - **AI Repair**: Uses AI to fix entire folders of broken rules.
 
-<img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/c04acd2f-5317-4cdc-92f2-9b6ab094e29a" />
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/a52ff4aa-24ee-467d-b118-532698b04b91" />
+
 
 ### YARA Generator
 
@@ -65,9 +67,10 @@ Create new rules automatically using yarGen-Go by Neo23x0.
 
 Refer https://github.com/Neo23x0/yarGen-Go/tree/main for installation of the tool.
 
-- **Auto-Rule**: Point it at a malware folder, and it will write a rule for you.
+- **Auto-Rule**: Point it at a malware samples folder, and it will write a rule for you.
 
-<img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/893d6388-00ed-4861-8593-92119c478b66" />
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/63c8618c-72c3-4c59-b10c-29ab5d1a7b08" />
+
 
 ### YARA Search
 
@@ -77,6 +80,29 @@ Find any rule in your library instantly.
 - **Quick Preview**: See the rule code without opening the file.
 
 <img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/53b9674e-b966-494f-b9e4-af3d03f71fbe" />
+
+---
+
+## Configuration & Tools
+
+### YARA Generator (yarGen)
+
+The **YARA Generator** feature requires a tool called `yarGen-Go` to work.
+
+1. **Download**: Download and install the project from [https://github.com/Neo23x0/yarGen-Go](https://github.com/Neo23x0/yarGen-Go?tab=readme-ov-file#getting-started).
+2. **Setup**:
+   - Open YARA Playground.
+   - Go to the **YARA Generator** tab.
+   - Click **Browse Tool** and select the `yargen-go.exe` you downloaded.
+3. **Usage**: Point it at a folder of malware samples, and it will generate a rule for you automatically.
+
+### Config Files
+
+You can customize the app settings in the `config/` folder:
+
+- **`AI.cfg`**: Contains your OpenAI settings for the **AI Fix** feature.
+- **`yara_sources.txt`**: A list of URLs where the app downloads YARA rules from.
+- **`app_settings.json`**: Saves your tool paths so you don't have to select them every time.
 
 ---
 
@@ -94,22 +120,28 @@ Find any rule in your library instantly.
 
 ## Installation
 
-1. **Requirements**: Python 3.11 or newer.
-2. **Setup**: Install the required libraries:
+1. **Python**: Make sure you have Python 3.11+ installed.
+2. **Library Setup**: Install the required tools:
 
 ```powershell
 pip install -r requirements.txt
+```
+
+1. **Run**:
+
+```powershell
+python Scripts/yara_playground.py
 ```
 
 ---
 
 ## AI Configuration
 
-To use the AI repair feature, you need an OpenAI API key.
+To use the AI repair feature:
 
 1. Go to the `config/` folder.
 2. Duplicate `AI.cfg.example` and rename it to `AI.cfg`.
-3. Open `AI.cfg` and add your key:
+3. Open `AI.cfg` and add your OpenAI API key:
 
 ```json
 {
