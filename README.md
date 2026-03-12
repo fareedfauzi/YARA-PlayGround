@@ -35,8 +35,7 @@ Scan files or folders using collected thousands of YARA rules.
 - **Fast Scanning**: Choose a folder and see threats instantly.
 - **Smart View**: Click a match to see the exact code that found the threat.
 
-<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/0716cb70-9c9a-4950-8476-67d1ff5983fd" />
-
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/82647fd0-2976-487a-bca5-a6ed7463fb21" />
 
 
 ### YARA Editor and Tester (Lab)
