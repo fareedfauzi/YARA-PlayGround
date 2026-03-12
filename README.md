@@ -28,22 +28,55 @@ To create a standalone EXE, run `build_exe.bat`.
 
 ## Main Features
 
+### YARA Scanner
+
+Scan files or folders using collected thousands of YARA rules.
+
+- **Fast Scanning**: Choose a folder and see threats instantly.
+- **Smart View**: Click a match to see the exact code that found the threat.
+
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/36c4c6f9-19c1-48b8-ada8-bb845386c9ec" />
+
+
+### YARA Editor and Tester (Lab)
+
+Write and test your rules in one place.
+
+- **Live Check**: Tells you if your code has mistakes.
+- **Batch Test**: Run your rule against many files at once to see if the detection works.
+- **AI Fix**: Uses AI to automatically fix broken rules.
+
+<img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/7e8ee304-db29-4b89-9bcc-9d2d39976e5e" />
+
+
 ### YARA Collector
-Downloads and organizes YARA rules from over 50 sources.
-- **Master Rules**: Automatically groups valid rules into one file.
-- **Problematic Rules**: Moves broken rules to a separate folder so they don't stop the scanner.
-- **AI Repair**: Uses OpenAI to fix syntax errors in broken rules automatically.
 
-### YARA Editor and Tester
-An editor for writing and testing YARA rules.
-- **Syntax Highlighting**: Colors for keywords, strings, and regex.
-- **Live Check**: Checks if your rule is valid while you type.
-- **Drag and Drop**: Drag files directly into the editor to test them.
+Keep your rules organized and up to date.
 
-### Search and Scan
-- **Search**: Find rules by name or content across all folders.
-- **Scanner**: Scan files or entire folders to find threats.
-- **Snippet View**: View only the specific rule that matched a file.
+- **Auto-Download**: Gets rules from over 50 sources automatically.
+- **Rule Cleanup**: Finds broken rules and moves them so they don't stop the scanner.
+- **AI Repair**: Uses AI to fix entire folders of broken rules.
+
+<img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/c04acd2f-5317-4cdc-92f2-9b6ab094e29a" />
+
+### YARA Generator
+
+Create new rules automatically using yarGen-Go by Neo23x0.
+
+Refer https://github.com/Neo23x0/yarGen-Go/tree/main for installation of the tool.
+
+- **Auto-Rule**: Point it at a malware folder, and it will write a rule for you.
+
+<img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/893d6388-00ed-4861-8593-92119c478b66" />
+
+### YARA Search
+
+Find any rule in your library instantly.
+
+- **Fast Search**: Search by name, author, or any text inside the rules.
+- **Quick Preview**: See the rule code without opening the file.
+
+<img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/53b9674e-b966-494f-b9e4-af3d03f71fbe" />
 
 ---
 
