@@ -16,6 +16,7 @@ import json
 import requests
 import zipfile
 import shutil
+import shlex
 from urllib.parse import urlparse
 
 # --- Dark Theme ---
@@ -28,6 +29,54 @@ CLR_ACCENT = "#5865F2"
 CLR_SUCCESS = "#2ECC71"
 CLR_ERROR = "#F04747"
 CLR_TEXT_DIM = "#8E9297"
+
+class CTKTooltip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        
+        # Bind to the main widget
+        self.widget.bind("<Enter>", self.show_tooltip, add="+")
+        self.widget.bind("<Leave>", self.hide_tooltip, add="+")
+        
+        # CTA widgets (like buttons) have internal components (canvas, label).
+        # We bind to them recursively to ensure the entire area triggers the tooltip.
+        self._bind_recursive(self.widget)
+
+    def _bind_recursive(self, w):
+        for child in w.winfo_children():
+            child.bind("<Enter>", self.show_tooltip, add="+")
+            child.bind("<Leave>", self.hide_tooltip, add="+")
+            self._bind_recursive(child)
+
+    def show_tooltip(self, event=None):
+        if self.tooltip_window or not self.text:
+            return
+            
+        # Offset positioning: Below the widget, centered horizontally
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        
+        self.tooltip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        
+        label = tk.Label(tw, text=self.text, justify='left',
+                         background="#2B2B2B", foreground="#FFFFFF", 
+                         relief='flat', borderwidth=0,
+                         padx=8, pady=6,
+                         font=("Inter", 10),
+                         wraplength=300) # Wrap long descriptions
+        label.pack()
+        
+        # Accent border logic
+        tw.configure(background="#5865F2")
+
+    def hide_tooltip(self, event=None):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
 
 class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self):
@@ -45,14 +94,16 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.abort_collection = False
         self.sidebar_collapsed = False
         self.analysis_rules_path = ctk.StringVar(value="Select YARA rules directory...")
-        self.lab_rule_path = ctk.StringVar(value="File")
+        self.lab_rule_path = ctk.StringVar(value="Browse rule file or just paste your rules in the editor")
         self.lab_view_mode = "split"
         
         # Generator State
         self.yargen_path = ctk.StringVar(value="Not Configured (Setup Required)")
         self.gen_sample_path = ctk.StringVar(value="Select folder containing samples...")
+        self.gen_custom_flags = ctk.StringVar(value="--score")
         self.is_generating = False
         self.search_index = []
+        self.search_path = ctk.StringVar(value="Default (./Master Rules)")
         
         # UI Structure
         self.grid_columnconfigure(1, weight=1)
@@ -423,7 +474,12 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         console_pane.grid_rowconfigure(1, weight=1)
         console_pane.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(console_pane, text="OUTPUT CONSOLE", font=("Inter", 11, "bold"), text_color=CLR_TEXT_DIM).grid(row=0, column=0, sticky="w", pady=(0, 5))
+        console_header = ctk.CTkFrame(console_pane, fg_color="transparent")
+        console_header.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+
+        ctk.CTkLabel(console_header, text="OUTPUT CONSOLE", font=("Inter", 11, "bold"), text_color=CLR_TEXT_DIM).pack(side="left")
+        self.analysis_loader = ctk.CTkLabel(console_header, text="", font=("Inter", 14, "bold"), text_color=CLR_ACCENT)
+        self.analysis_loader.pack(side="left", padx=10)
 
         self.analysis_out = ctk.CTkTextbox(console_pane, fg_color=CLR_CARD, corner_radius=15, 
                                           border_width=1, border_color="#1E232E", 
@@ -450,20 +506,21 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         inner.grid_columnconfigure(1, weight=1)
 
         # Row 1: Target Folder (Samples)
-        self.lab_path = ctk.StringVar(value="Select target folder containing samples...")
-        ctk.CTkLabel(inner, text="TARGET DIR:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=0, column=0, padx=(0, 15), sticky="w")
+        self.lab_path = ctk.StringVar(value="Select target specific file sample or folder containing samples...")
+        ctk.CTkLabel(inner, text="TARGET:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=0, column=0, padx=(0, 15), sticky="w")
         ctk.CTkLabel(inner, textvariable=self.lab_path, fg_color=CLR_BG, corner_radius=10, height=35, anchor="w", padx=15).grid(row=0, column=1, sticky="ew", pady=5)
         
         target_btns = ctk.CTkFrame(inner, fg_color="transparent")
-        target_btns.grid(row=0, column=2, padx=(15, 0))
-        ctk.CTkButton(target_btns, text="Browse", width=90, height=32, command=self.pick_folder).pack(side="left")
+        target_btns.grid(row=0, column=2, padx=(15, 0), sticky="w")
+        ctk.CTkButton(target_btns, text="Browse file", width=110, height=32, command=self.pick_lab_file).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(target_btns, text="Browse folder", width=110, height=32, command=self.pick_folder).pack(side="left")
 
         # Row 2: Rule File
         ctk.CTkLabel(inner, text="RULE FILE:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=1, column=0, padx=(0, 15), sticky="w")
         ctk.CTkLabel(inner, textvariable=self.lab_rule_path, fg_color=CLR_BG, corner_radius=10, height=35, anchor="w", padx=15).grid(row=1, column=1, sticky="ew")
         
         rule_btns = ctk.CTkFrame(inner, fg_color="transparent")
-        rule_btns.grid(row=1, column=2, padx=(15, 0))
+        rule_btns.grid(row=1, column=2, padx=(15, 0), sticky="w")
         ctk.CTkButton(rule_btns, text="Browse Rule", width=110, height=32, command=self.pick_lab_rule_file).pack(side="left", padx=(0, 10))
         ctk.CTkButton(rule_btns, text="Save As", width=90, height=32, fg_color="#202225", border_width=1, border_color="#30363D",
                       command=lambda: self.save_lab_rule(True)).pack(side="left", padx=(0, 5))
@@ -614,20 +671,21 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # Action Buttons (Primary Grid)
         actions = [
-            ("Collect or Update Rules", "#202225", lambda: self.start_collection("update")),
-            ("Validate Master Rules", "#202225", lambda: self.start_collection("validate")),
-            ("Fix Problematic Rules", "#202225", lambda: self.start_collection("fix")),
-            ("Fix Problematic Rules (AI)", "#1A3F2B", lambda: self.start_collection("ai_repair")),
-            ("Deduplicate Rules", "#202225", lambda: self.start_collection("deduplicate")),
-            ("Reset Everything", "#2D1616", lambda: self.start_collection("reset"))
+            ("Collect or Update Rules", "#202225", lambda: self.start_collection("update"), "Sync and download new YARA rules from all configured GitHub repositories and public sources."),
+            ("Validate Master Rules", "#202225", lambda: self.start_collection("validate"), "Scan the 'Master Rules' directory to find and isolate any malformed rules that cause compilation errors."),
+            ("Fix Problematic Rules", "#202225", lambda: self.start_collection("fix"), "Apply automated regex-based repairs to fix common syntax errors in quarantined rules."),
+            ("Fix Problematic Rules (AI)", "#1A3F2B", lambda: self.start_collection("ai_repair"), "Use LLM/AI logic to intelligently repair complex syntax errors and promote fixed rules back to the Master repository."),
+            ("Deduplicate Rules", "#202225", lambda: self.start_collection("deduplicate"), "Scan the rulebase to find and remove exact duplicate rules to optimize scanner performance."),
+            ("Reset Everything", "#2D1616", lambda: self.start_collection("reset"), "Wipe all downloaded, fixed, and problematic rules to start with a completely fresh environment.")
         ]
         
         self.collector_action_btns = []
-        for i, (text, color, cmd) in enumerate(actions):
+        for i, (text, color, cmd, tip) in enumerate(actions):
             btn = ctk.CTkButton(cmd_grid, text=text, fg_color=color, anchor="center",
                                 command=cmd, width=170, height=40, font=("Inter", 12, "bold"))
             btn.grid(row=0, column=i, padx=(0, 10), pady=10)
             self.collector_action_btns.append(btn)
+            CTKTooltip(btn, tip)
 
         # Task Control (Stop + Status + Loader)
         control_bar = ctk.CTkFrame(controls, fg_color="#1A1F29", corner_radius=10)
@@ -636,6 +694,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_stop = ctk.CTkButton(control_bar, text="Stop Process", fg_color="#da372c", hover_color="#a92e25",
                                      command=self.stop_collection, width=150, height=45, font=("Inter", 12, "bold"), state="disabled")
         self.btn_stop.pack(side="left", padx=15, pady=12)
+        CTKTooltip(self.btn_stop, "Gracefully abort the currently running collection or repair task.")
         
         status_info = ctk.CTkFrame(control_bar, fg_color="transparent")
         status_info.pack(side="left", fill="x", expand=True, padx=10)
@@ -665,8 +724,10 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         log_header = ctk.CTkFrame(dash, fg_color="transparent")
         log_header.pack(fill="x", pady=(0, 5))
         ctk.CTkLabel(log_header, text="Logs", font=("Inter", 11, "bold"), text_color=CLR_TEXT_DIM).pack(side="left")
-        ctk.CTkButton(log_header, text="Clear Log", fg_color="#202225", height=24, width=80, font=("Inter", 10, "bold"),
-                      command=lambda: (self.col_out.configure(state="normal"), self.col_out.delete("1.0", "end"), self.col_out.configure(state="disabled"))).pack(side="right")
+        self.btn_clear_col_log = ctk.CTkButton(log_header, text="Clear Log", fg_color="#202225", height=24, width=80, font=("Inter", 10, "bold"),
+                      command=lambda: (self.col_out.configure(state="normal"), self.col_out.delete("1.0", "end"), self.col_out.configure(state="disabled")))
+        self.btn_clear_col_log.pack(side="right")
+        CTKTooltip(self.btn_clear_col_log, "Clear the current session logs from the console window.")
 
         self.col_out = ctk.CTkTextbox(dash, fg_color=CLR_CARD, corner_radius=15, border_width=1, border_color="#1E232E", 
                                      font=("Consolas", 12), text_color="#A9B7C6")
@@ -681,6 +742,15 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.col_loader.configure(text=self.loader_frames[self.loader_idx % len(self.loader_frames)])
         self.loader_idx += 1
         self.after(80, self.animate_collector_loader)
+
+    def animate_analysis_loader(self):
+        if not self.is_scanning:
+            self.analysis_loader.configure(text="")
+            return
+        
+        self.analysis_loader.configure(text=self.loader_frames[self.loader_idx % len(self.loader_frames)])
+        self.loader_idx += 1
+        self.after(80, self.animate_analysis_loader)
 
     def log_col(self, msg, type="info"):
         from datetime import datetime
@@ -715,19 +785,29 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # Tool Path Selection
         ctk.CTkLabel(inner, text="YARGEN TOOL:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=0, column=0, padx=(0, 15), sticky="w")
         ctk.CTkLabel(inner, textvariable=self.yargen_path, fg_color=CLR_BG, corner_radius=10, height=35, anchor="w", padx=15).grid(row=0, column=1, sticky="ew", pady=5)
-        ctk.CTkButton(inner, text="Browse Tool", width=125, height=35, command=self.pick_yargen_path).grid(row=0, column=2, padx=(15, 0))
+        ctk.CTkButton(inner, text="Browse yarGen binary", width=125, height=35, command=self.pick_yargen_path).grid(row=0, column=2, padx=(15, 0))
 
         # Sample Folder Selection
         ctk.CTkLabel(inner, text="SAMPLE FOLDER:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=1, column=0, padx=(0, 15), sticky="w")
         ctk.CTkLabel(inner, textvariable=self.gen_sample_path, fg_color=CLR_BG, corner_radius=10, height=35, anchor="w", padx=15).grid(row=1, column=1, sticky="ew")
         ctk.CTkButton(inner, text="Browse Samples", width=125, height=35, command=self.pick_gen_sample).grid(row=1, column=2, padx=(15, 0))
 
+        # Custom Flags Selection
+        ctk.CTkLabel(inner, text="CUSTOM FLAGS:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=2, column=0, padx=(0, 15), sticky="w")
+        self.gen_flags_entry = ctk.CTkEntry(inner, textvariable=self.gen_custom_flags, placeholder_text="e.g. --super-rules --no-p-ext", height=35, fg_color=CLR_BG, border_color="#30363D")
+        self.gen_flags_entry.grid(row=2, column=1, sticky="ew", pady=(5, 0))
+
         # Action Area
         action_frame = ctk.CTkFrame(controls, fg_color="transparent")
         action_frame.pack(fill="x", side="bottom", pady=(0, 20), padx=30)
+        
+        self.btn_gen_help = ctk.CTkButton(action_frame, text="View Tool Help", height=48, width=150, 
+                                          command=self.show_yargen_help, fg_color="#202225", font=("Inter", 12, "bold"))
+        self.btn_gen_help.pack(side="left", padx=(0, 10))
+
         self.btn_generate = ctk.CTkButton(action_frame, text="Generate YARA Rule", height=48, command=self.run_yargen, 
                                          fg_color=CLR_SUCCESS, hover_color="#27AE60", font=("Inter", 13, "bold"))
-        self.btn_generate.pack(fill="x")
+        self.btn_generate.pack(side="left", fill="x", expand=True)
 
         # 3. Output Split (Logs vs Results)
         split = ctk.CTkFrame(view, fg_color="transparent")
@@ -770,6 +850,29 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         d = filedialog.askdirectory(title="Select Malware Samples Folder")
         if d: self.gen_sample_path.set(d)
 
+    def show_yargen_help(self):
+        exe = self.yargen_path.get()
+        if not os.path.exists(exe) or "Not Configured" in exe:
+            messagebox.showwarning("System Check", "yargen.exe path is invalid. Please use the 'Browse Tool' button to select it.")
+            return
+
+        def task():
+            try:
+                self.after(0, lambda: self.log_gen("Fetching tool help information...", "info"))
+                proc = subprocess.run([exe, "-h"], capture_output=True, text=True, cwd=str(Path(exe).parent))
+                output = proc.stdout if proc.stdout else proc.stderr
+                if output:
+                    self.after(0, lambda o=output: (
+                        self.log_to_textbox(self.gen_out, f"\n--- YARGEN TOOL HELP ---\n{o}\n"),
+                        self.log_gen("Help output displayed in console.", "success")
+                    ))
+                else:
+                    self.after(0, lambda: self.log_gen("Tool returned no help output.", "warn"))
+            except Exception as e:
+                self.after(0, lambda e=e: self.log_gen(f"Help Error: {str(e)}", "error"))
+
+        threading.Thread(target=task, daemon=True).start()
+
     def run_yargen(self):
         if self.is_generating: return
         exe = self.yargen_path.get()
@@ -793,7 +896,20 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.log_gen(f"Initiating blueprinting on: {samples}", "info")
                 
                 # Command execution with CWD set to yargen's folder
-                cmd = [exe, "-m", samples, "--score", "-o", str(output_file)]
+                custom_flags = self.gen_custom_flags.get().strip()
+                # Essential flags: -m for samples, -o for output
+                cmd = [exe, "-m", samples, "-o", str(output_file)]
+                
+                # Append user flags from the UI (e.g. --score, --super-rules)
+                if custom_flags:
+                    try:
+                        # Use shlex to correctly parse flags (handling quotes etc.)
+                        added_flags = shlex.split(custom_flags)
+                        cmd.extend(added_flags)
+                    except:
+                        # Fallback to simple split if shlex fails
+                        cmd.extend(custom_flags.split())
+
                 self.log_gen(f"Executing: {' '.join(cmd)}", "info")
                 
                 # We use Popen to capture output if possible, but yargen-go might be quiet
@@ -839,15 +955,27 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         
         inner = ctk.CTkFrame(controls, fg_color="transparent")
         inner.pack(fill="x", padx=30, pady=20)
+        inner.grid_columnconfigure(1, weight=1)
+
+        # Folder Selection Row
+        ctk.CTkLabel(inner, text="LIBRARY FOLDER:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=0, column=0, padx=(0, 15), sticky="w")
+        ctk.CTkLabel(inner, textvariable=self.search_path, fg_color=CLR_BG, corner_radius=10, height=35, anchor="w", padx=15).grid(row=0, column=1, sticky="ew", pady=(0, 10))
         
+        folder_btns = ctk.CTkFrame(inner, fg_color="transparent")
+        folder_btns.grid(row=0, column=2, padx=(15, 0), pady=(0, 10))
+        ctk.CTkButton(folder_btns, text="Browse", width=80, height=32, command=self.pick_search_folder).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(folder_btns, text="Reset", width=60, height=32, fg_color="#202225", command=lambda: (self.search_path.set("Default (./Master Rules)"), setattr(self, 'search_index', []))).pack(side="left")
+
+        # Search Query Row
+        ctk.CTkLabel(inner, text="SEARCH QUERY:", font=self.emoji_font_bold, text_color=CLR_ACCENT).grid(row=1, column=0, padx=(0, 15), sticky="w")
         self.search_var = ctk.StringVar()
         self.search_entry = ctk.CTkEntry(inner, textvariable=self.search_var, placeholder_text="Enter keyword, rule name, or meta info...",
-                                        height=45, font=("Inter", 13), fg_color=CLR_BG, border_color="#30363D")
-        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 15))
+                                        height=40, font=("Inter", 13), fg_color=CLR_BG, border_color="#30363D")
+        self.search_entry.grid(row=1, column=1, sticky="ew")
         self.search_entry.bind("<Return>", lambda e: self.run_search())
         
-        ctk.CTkButton(inner, text="Search Rules", width=180, height=45, font=("Inter", 12, "bold"),
-                      command=self.run_search, fg_color=CLR_ACCENT, hover_color="#4752C4").pack(side="right")
+        ctk.CTkButton(inner, text="Search Rules", width=155, height=40, font=("Inter", 12, "bold"),
+                      command=self.run_search, fg_color=CLR_ACCENT, hover_color="#4752C4").grid(row=1, column=2, padx=(15, 0))
 
         # 3. Main Display (Split)
         split = ctk.CTkFrame(view, fg_color="transparent")
@@ -917,15 +1045,25 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 except:
                     pass
 
-            # 1. Index Master File if it exists
-            if master_file.exists():
-                index_file(master_file)
+            # 1. Index Master File if it exists (only if searching all)
+            custom_path = self.search_path.get()
+            is_default = "All Repositories" in custom_path
 
-            # 2. Index all folders and subfolders
-            for d in [MASTER_DIR, STORAGE_DIR, QUARANTINE_DIR, ENV_SPECIFIC_DIR, FIXED_DIR]:
+            if is_default:
+                if master_file.exists():
+                    index_file(master_file)
+
+                # 2. Index all folders and subfolders
+                for d in [MASTER_DIR, STORAGE_DIR, QUARANTINE_DIR, ENV_SPECIFIC_DIR, FIXED_DIR]:
+                    if d.exists():
+                        for f in d.rglob("*.yar*"):
+                            if f.resolve() == master_file.resolve(): continue
+                            index_file(f)
+            else:
+                # Index custom path
+                d = Path(custom_path)
                 if d.exists():
                     for f in d.rglob("*.yar*"):
-                        if f.resolve() == master_file.resolve(): continue
                         index_file(f)
         
         if not self.search_index:
@@ -1188,6 +1326,18 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         d = filedialog.askdirectory()
         if d: self.lab_path.set(d)
 
+    def pick_lab_file(self):
+        f = filedialog.askopenfilename()
+        if f: self.lab_path.set(f)
+
+    def pick_search_folder(self):
+        d = filedialog.askdirectory(title="Select YARA Rules Repository to Search")
+        if d:
+            self.search_path.set(d)
+            # Clear index to force re-indexing of the new path
+            self.search_index = []
+            self.update_status(f"Library set to: {os.path.basename(d)}", "ok")
+
     def run_file_scan(self):
         path = self.target_path.get()
         rules_dir = self.analysis_rules_path.get()
@@ -1201,6 +1351,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
 
         self.is_scanning = True
+        self.animate_analysis_loader()
         self.clear_hits_gallery()
         self.log_to_textbox(self.analysis_out, f"[*] Target: {os.path.basename(path)}\n", clear=True)
         self.log_to_textbox(self.analysis_out, f"[*] Rules: {os.path.basename(rules_dir)}\n")
@@ -1518,12 +1669,12 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.lab_status.configure(text="ERROR: Cannot scan with invalid rules", text_color=CLR_ERROR)
             return
         
-        # 2. Folder Validation
-        folder = self.lab_path.get()
+        # 2. Target Validation (Folder or File)
+        target = self.lab_path.get()
         placeholder = "Select target folder containing samples..."
-        if not os.path.isdir(folder) or folder == placeholder:
-            self.update_status("Error: Select a valid target folder", "error")
-            messagebox.showwarning("Target Required", "Please select a valid folder containing files to scan.")
+        if not os.path.exists(target) or target == placeholder:
+            self.update_status("Error: Select a valid target", "error")
+            messagebox.showwarning("Target Required", "Please select a valid folder or file to scan.")
             return
 
         self.is_scanning = True
@@ -1539,11 +1690,14 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         all_rule_names = re.findall(r'rule\s+([\w\.]+)', raw_rule)
         rule_stats = {name: 0 for name in all_rule_names}
 
-        self.log_to_textbox(self.summary_box, f"[*] Starting Batch Scan\n[*] Target: {folder}\n\n")
+        self.log_to_textbox(self.summary_box, f"[*] Starting Batch Scan\n[*] Target: {target}\n\n")
 
         def task():
             try:
-                f_paths = [p for p in Path(folder).rglob("*") if p.is_file()]
+                if os.path.isdir(target):
+                    f_paths = [p for p in Path(target).rglob("*") if p.is_file()]
+                else:
+                    f_paths = [Path(target)]
                 total = len(f_paths)
                 self.after(0, lambda: self.log_to_textbox(self.summary_box, f"[*] Found {total} files. Starting scan...\n"))
                 
