@@ -1,4 +1,5 @@
 import sys
+from typing import cast, Any
 import subprocess
 import tkinter as tk
 from tkinter import ttk
@@ -85,14 +86,30 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # Window Configuration
         self.title("YARA Playground")
-        self.geometry("1400x900")
+        self.after(0, lambda: self.state('zoomed'))
         self.configure(fg_color=CLR_BG)
         
         # State
-        self.master_rules = None
+        self.master_rules: str = ""
         self.is_scanning = False
         self.abort_collection = False
         self.sidebar_collapsed = False
+        self.scanner_cached_rules = None
+        self.scanner_rules_fingerprint = {}
+        self.loader_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.loader_idx = 0
+        
+        # Determine available YARA modules to prevent "unknown module" errors
+        try:
+            available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+        except:
+            available_mods = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+            
+        requested_mods = {
+            "pe", "elf", "macho", "dex", "dotnet", "magic", "hash", "math", "time", "archive", "cuckoo", "string", "console", "vt", "lnk", "androguard"
+        }
+        # Only keep what is actually supported by the local YARA library
+        self.standard_yara_imports = sorted(list(requested_mods.intersection(available_mods)))
         self.analysis_rules_path = ctk.StringVar(value="Select YARA rules directory...")
         self.lab_rule_path = ctk.StringVar(value="Browse rule file or just paste your rules in the editor")
         self.lab_view_mode = "split"
@@ -116,11 +133,28 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def load_app_settings(self):
         try:
             base_dir = Path(__file__).parent.parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent
-            cfg_path = base_dir / "config" / "app_settings.json"
+            cfg_dir = base_dir / "config"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            
+            # --- CONFIG MIGRATION: Root to config/ ---
+            for cfg_file in ["AI.cfg", "yara_sources.txt"]:
+                root_path = base_dir / cfg_file
+                target_path = cfg_dir / cfg_file
+                if root_path.exists() and not target_path.exists():
+                    try: shutil.move(str(root_path), str(target_path))
+                    except: pass
+                elif root_path.exists() and target_path.exists():
+                    try: root_path.unlink() # Prefer the one in config/
+                    except: pass
+
+            cfg_path = cfg_dir / "app_settings.json"
             if cfg_path.exists():
                 settings = json.loads(cfg_path.read_text())
                 if "yargen_path" in settings:
                     self.yargen_path.set(settings["yargen_path"])
+            
+            # Ensure master_rules points to the main rulebase file for promotions
+            self.master_rules = str(base_dir / "Master Rules" / "public_master_rules.yara")
         except:
             pass
 
@@ -204,35 +238,35 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.tagline = ctk.CTkLabel(self.sidebar, text="Everything you need for YARA!", font=("Inter", 11), text_color=CLR_ACCENT)
         self.tagline.grid(row=2, column=0, padx=20, pady=(0, 30))
         
-        self.btn_analysis = ctk.CTkButton(self.sidebar, text="  YARA Scanner", 
-                                          image=None, anchor="w", font=self.emoji_font,
-                                          fg_color="transparent", text_color="white",
-                                          hover_color="#202225", command=lambda: self.select_tab("analysis"))
-        self.btn_analysis.grid(row=3, column=0, padx=15, pady=10, sticky="ew")
-        
-        self.btn_lab = ctk.CTkButton(self.sidebar, text="  YARA Editor", 
-                                     image=None, anchor="w", font=self.emoji_font,
-                                     fg_color="transparent", text_color="white",
-                                     hover_color="#202225", command=lambda: self.select_tab("lab"))
-        self.btn_lab.grid(row=4, column=0, padx=15, pady=10, sticky="ew")
-
         self.btn_collector = ctk.CTkButton(self.sidebar, text="  YARA Collector", 
                                           image=None, anchor="w", font=self.emoji_font,
                                           fg_color="transparent", text_color="white",
                                           hover_color="#202225", command=lambda: self.select_tab("collector"))
-        self.btn_collector.grid(row=5, column=0, padx=15, pady=10, sticky="ew")
-
-        self.btn_generator = ctk.CTkButton(self.sidebar, text="  YARA Generator", 
-                                          image=None, anchor="w", font=self.emoji_font,
-                                          fg_color="transparent", text_color="white",
-                                          hover_color="#202225", command=lambda: self.select_tab("generator"))
-        self.btn_generator.grid(row=6, column=0, padx=15, pady=10, sticky="ew")
+        self.btn_collector.grid(row=3, column=0, padx=15, pady=10, sticky="ew")
 
         self.btn_search = ctk.CTkButton(self.sidebar, text="  YARA Search", 
                                        image=None, anchor="w", font=self.emoji_font,
                                        fg_color="transparent", text_color="white",
                                        hover_color="#202225", command=lambda: self.select_tab("search"))
-        self.btn_search.grid(row=7, column=0, padx=15, pady=10, sticky="ew")
+        self.btn_search.grid(row=4, column=0, padx=15, pady=10, sticky="ew")
+
+        self.btn_analysis = ctk.CTkButton(self.sidebar, text="  YARA Scanner", 
+                                          image=None, anchor="w", font=self.emoji_font,
+                                          fg_color="transparent", text_color="white",
+                                          hover_color="#202225", command=lambda: self.select_tab("analysis"))
+        self.btn_analysis.grid(row=5, column=0, padx=15, pady=10, sticky="ew")
+        
+        self.btn_lab = ctk.CTkButton(self.sidebar, text="  YARA Editor + Tester", 
+                                     image=None, anchor="w", font=self.emoji_font,
+                                     fg_color="transparent", text_color="white",
+                                     hover_color="#202225", command=lambda: self.select_tab("lab"))
+        self.btn_lab.grid(row=6, column=0, padx=15, pady=10, sticky="ew")
+
+        self.btn_generator = ctk.CTkButton(self.sidebar, text="  YARA Generator", 
+                                          image=None, anchor="w", font=self.emoji_font,
+                                          fg_color="transparent", text_color="white",
+                                          hover_color="#202225", command=lambda: self.select_tab("generator"))
+        self.btn_generator.grid(row=7, column=0, padx=15, pady=10, sticky="ew")
 
         # Status footer in sidebar
         self.status_label = ctk.CTkLabel(self.sidebar, text="Status: All good!", font=("Inter", 11), text_color=CLR_SUCCESS)
@@ -267,7 +301,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.tagline.grid()
             self.btn_analysis.configure(text="  YARA Scanner", width=190, anchor="w")
             self.btn_analysis.grid(padx=15, sticky="ew")
-            self.btn_lab.configure(text="  YARA Editor", width=190, anchor="w")
+            self.btn_lab.configure(text="  YARA Editor + Tester", width=190, anchor="w")
             self.btn_lab.grid(padx=15, sticky="ew")
             self.btn_collector.configure(text="  YARA Collector", width=190, anchor="w")
             self.btn_collector.grid(padx=15, sticky="ew")
@@ -320,12 +354,12 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 w = 180
             tree.column(col, width=w, minwidth=40, stretch=False, anchor="w")
         
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(0, weight=1)
+        
         tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
-        
-        container.grid_columnconfigure(0, weight=1)
-        container.grid_rowconfigure(0, weight=1)
         
         # Right-click context menu
         tree.bind("<Button-3>", lambda e: self.show_context_menu(e, tree))
@@ -376,7 +410,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.create_generator_view()
         self.create_search_view()
         
-        self.select_tab("analysis")
+        self.select_tab("collector")
 
     def create_analysis_view(self):
         view = ctk.CTkFrame(self.main_container, fg_color="transparent")
@@ -418,8 +452,12 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         ctk.CTkButton(action_btns, text="Reset Analysis", fg_color="#2D1616", border_width=1, border_color="#4D1C1C", 
                       hover_color="#3D1C1C", command=self.reset_analysis, width=150, height=45, font=("Inter", 12, "bold")).pack(side="left", padx=(0, 15))
                       
-        ctk.CTkButton(action_btns, text="Scan", fg_color=CLR_SUCCESS, hover_color="#00A156", 
-                      command=self.run_file_scan, width=180, height=45, font=("Inter", 13, "bold")).pack(side="left")
+        ctk.CTkButton(action_btns, text="Scan", fg_color=CLR_ACCENT, hover_color="#4752C4", 
+                      command=self.run_file_scan, width=150, height=45, font=("Inter", 13, "bold")).pack(side="left", padx=(0, 15))
+                      
+        self.btn_stop_analysis = ctk.CTkButton(action_btns, text="Stop", fg_color="#F04747", hover_color="#D83C3C",
+                                              command=self.stop_collection, width=100, height=45, font=("Inter", 13, "bold"), state="disabled")
+        self.btn_stop_analysis.pack(side="left")
 
         # 3. Optimized 3-Pane Dashboard (Tiered Layout)
         split = ctk.CTkFrame(view, fg_color="transparent")
@@ -626,10 +664,12 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.res_footer_spacer.grid(row=2, column=0, pady=(5, 0))
         self.res_view.add("Detections")
         self.res_view.add("Undetected")
+        self.res_view.add("String Matches")
         self.res_view.add("Summary")
         
         self.hit_tree = self.create_table(self.res_view.tab("Detections"), ("#", "Filename", "Rules", "MD5", "Full Path"))
         self.clean_tree = self.create_table(self.res_view.tab("Undetected"), ("#", "Filename", "MD5", "Full Path"))
+        self.string_tree = self.create_table(self.res_view.tab("String Matches"), ("String ID", "Content"))
         
         self.summary_box = ctk.CTkTextbox(self.res_view.tab("Summary"), fg_color="transparent", 
                                          font=("Consolas", 12), state="disabled")
@@ -639,10 +679,14 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         lab_actions = ctk.CTkFrame(view, fg_color="transparent")
         lab_actions.pack(side="bottom", fill="x", pady=(10, 0))
         
+        ctk.CTkButton(lab_actions, text="Beautify Rule", fg_color="#202225", command=self.lab_beautify_rule).pack(side="left", padx=(10, 0))
         ctk.CTkButton(lab_actions, text="Check Syntax", fg_color="#202225", command=self.lab_check_syntax).pack(side="left", padx=10)
         ctk.CTkButton(lab_actions, text="✨ Fix Rule (AI)", fg_color="#1A3F2B", hover_color="#27AE60", 
                       command=self.fix_rule_ai).pack(side="left", padx=(0, 10))
-        ctk.CTkButton(lab_actions, text="Execute YARA Scan", fg_color=CLR_ACCENT, command=self.run_batch_scan).pack(side="left")
+        ctk.CTkButton(lab_actions, text="Execute YARA Scan", fg_color=CLR_ACCENT, command=self.run_batch_scan).pack(side="left", padx=(0, 10))
+        self.btn_stop_lab = ctk.CTkButton(lab_actions, text="Stop Scan", fg_color="#F04747", hover_color="#D83C3C", 
+                                         command=self.stop_collection, state="disabled")
+        self.btn_stop_lab.pack(side="left")
         
         # Utility buttons
         ctk.CTkButton(lab_actions, text="Clear Results", fg_color="#F04747", hover_color="#D83C3C", 
@@ -658,45 +702,90 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         header = ctk.CTkFrame(view, fg_color="transparent")
         header.pack(fill="x", pady=(0, 20))
         ctk.CTkLabel(header, text="YARA Rule Collector Dashboard", font=("Inter", 24, "bold")).pack()
-        ctk.CTkLabel(header, text="Automated Rule Collecting • Rule Collection Engine", 
+        ctk.CTkLabel(header, text="Rule Collection Engine", 
                      text_color=CLR_TEXT_DIM, font=("Inter", 12)).pack()
 
-        # 2. Control Card
-        controls = ctk.CTkFrame(view, fg_color=CLR_CARD, corner_radius=15, border_width=1, border_color="#1E232E")
-        controls.pack(fill="x", pady=(0, 20))
+        # Collector UI Sections (Dockers)
+        # Section 1: Download or update rules
+        sec1_docker = ctk.CTkFrame(view, fg_color=CLR_CARD, corner_radius=15, border_width=1, border_color="#1E232E")
+        sec1_docker.pack(fill="x", pady=(0, 15))
         
-        # Command Grid
-        cmd_grid = ctk.CTkFrame(controls, fg_color="transparent")
-        cmd_grid.pack(fill="x", padx=30, pady=(20, 10))
+        ctk.CTkLabel(sec1_docker, text="Download or update rules", font=("Inter", 14, "bold"), text_color=CLR_ACCENT).pack(anchor="w", padx=30, pady=(15, 5))
         
-        # Action Buttons (Primary Grid)
-        actions = [
-            ("Collect or Update Rules", "#202225", lambda: self.start_collection("update"), "Sync and download new YARA rules from all configured GitHub repositories and public sources."),
-            ("Validate Master Rules", "#202225", lambda: self.start_collection("validate"), "Scan the 'Master Rules' directory to find and isolate any malformed rules that cause compilation errors."),
-            ("Fix Problematic Rules", "#202225", lambda: self.start_collection("fix"), "Apply automated regex-based repairs to fix common syntax errors in quarantined rules."),
-            ("Fix Problematic Rules (AI)", "#1A3F2B", lambda: self.start_collection("ai_repair"), "Use LLM/AI logic to intelligently repair complex syntax errors and promote fixed rules back to the Master repository."),
-            ("Deduplicate Rules", "#202225", lambda: self.start_collection("deduplicate"), "Scan the rulebase to find and remove exact duplicate rules to optimize scanner performance."),
-            ("Reset Everything", "#2D1616", lambda: self.start_collection("reset"), "Wipe all downloaded, fixed, and problematic rules to start with a completely fresh environment.")
-        ]
+        sec1_grid = ctk.CTkFrame(sec1_docker, fg_color="transparent")
+        sec1_grid.pack(fill="x", padx=30, pady=(0, 20))
         
-        self.collector_action_btns = []
-        for i, (text, color, cmd, tip) in enumerate(actions):
-            btn = ctk.CTkButton(cmd_grid, text=text, fg_color=color, anchor="center",
-                                command=cmd, width=170, height=40, font=("Inter", 12, "bold"))
-            btn.grid(row=0, column=i, padx=(0, 10), pady=10)
-            self.collector_action_btns.append(btn)
-            CTKTooltip(btn, tip)
+        self.btn_download_rules = ctk.CTkButton(sec1_grid, text="Download Rules", fg_color="#202225", anchor="center",
+                            text_color_disabled="#3a3c40",
+                            command=lambda: self.start_collection("download"), width=170, height=40, font=("Inter", 12, "bold"))
+        self.btn_download_rules.grid(row=0, column=0, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_download_rules, "Initial download of all YARA rules from configured sources.")
+        
+        self.btn_update_rules = ctk.CTkButton(sec1_grid, text="Update Rules", fg_color="#202225", anchor="center",
+                            command=lambda: self.start_collection("update"), width=170, height=40, font=("Inter", 12, "bold"))
+        self.btn_update_rules.grid(row=0, column=1, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_update_rules, "Smart update of existing rules (git pull, zip refresh, file hash check).")
 
-        # Task Control (Stop + Status + Loader)
-        control_bar = ctk.CTkFrame(controls, fg_color="#1A1F29", corner_radius=10)
-        control_bar.pack(fill="x", padx=30, pady=(10, 20))
+        self.btn_edit_sources = ctk.CTkButton(sec1_grid, text="Edit rules source", fg_color="#202225", anchor="center",
+                            command=self.edit_sources, width=170, height=40, font=("Inter", 12, "bold"))
+        self.btn_edit_sources.grid(row=0, column=2, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_edit_sources, "Open the yara_sources.txt configuration file to manage rule sources.")
+
+        # Section 2: Fix Rules
+        sec2_docker = ctk.CTkFrame(view, fg_color=CLR_CARD, corner_radius=15, border_width=1, border_color="#1E232E")
+        sec2_docker.pack(fill="x", pady=(0, 15))
+
+        ctk.CTkLabel(sec2_docker, text="Audit, Clean and Fix Rules in Master Folder", font=("Inter", 14, "bold"), text_color=CLR_ACCENT).pack(anchor="w", padx=30, pady=(15, 5))
         
-        self.btn_stop = ctk.CTkButton(control_bar, text="Stop Process", fg_color="#da372c", hover_color="#a92e25",
+        sec2_grid = ctk.CTkFrame(sec2_docker, fg_color="transparent")
+        sec2_grid.pack(fill="x", padx=30, pady=(0, 20))
+
+        self.btn_extract_rules = ctk.CTkButton(sec2_grid, text="Audit & Clean Master", fg_color=CLR_ACCENT, hover_color="#4752C4",
+                            text_color="white", command=lambda: self.start_collection("extract"), width=200, height=40, font=("Inter", 12, "bold"))
+        self.btn_extract_rules.grid(row=0, column=0, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_extract_rules, "Recommended: One-click scan to find broken rules, move them to quarantine, and keep Master compiling.")
+
+
+        self.btn_fix_rules_ai = ctk.CTkButton(sec2_grid, text="Fix Quarantined (AI)", fg_color="#202225", anchor="center",
+                            command=lambda: self.start_collection("ai_repair"), width=150, height=40, font=("Inter", 12, "bold"))
+        self.btn_fix_rules_ai.grid(row=0, column=1, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_fix_rules_ai, "Use AI to repair rules in the 'Problematic Rules' folder.")
+
+        self.btn_promote_fixed = ctk.CTkButton(sec2_grid, text="Promote Fixed Rules", fg_color="#202225", anchor="center",
+                            command=lambda: self.start_collection("fix"), width=180, height=40, font=("Inter", 12, "bold"))
+        self.btn_promote_fixed.grid(row=0, column=2, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_promote_fixed, "Verify fixed rules in quarantine and return valid ones to Master.")
+
+        self.btn_open_prob = ctk.CTkButton(sec2_grid, text="Open Folders", fg_color="#202225", anchor="center",
+                            command=self.open_problematic_folder, width=130, height=40, font=("Inter", 12, "bold"))
+        self.btn_open_prob.grid(row=0, column=3, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_open_prob, "Open Problematic and Environment-specific folders.")
+
+        self.btn_remove_blacklist = ctk.CTkButton(sec2_grid, text="Remove Blacklist Rules", fg_color="#202225", anchor="center",
+                            command=lambda: self.start_collection("remove_blacklist"), width=180, height=40, font=("Inter", 12, "bold"))
+        self.btn_remove_blacklist.grid(row=0, column=4, padx=(0, 10), pady=5)
+        CTKTooltip(self.btn_remove_blacklist, "Remove rules specified in config/blacklist.txt from the Master folder.")
+
+        # Task & System Control Docker (Stop + Status + Reset)
+        control_docker = ctk.CTkFrame(view, fg_color=CLR_CARD, corner_radius=15, border_width=1, border_color="#1E232E")
+        control_docker.pack(fill="x", pady=(10, 20))
+
+        ctk.CTkLabel(control_docker, text="Task & System Controls", font=("Inter", 14, "bold"), text_color=CLR_ACCENT).pack(anchor="w", padx=30, pady=(15, 0))
+
+        control_inner = ctk.CTkFrame(control_docker, fg_color="#1A1F29", corner_radius=10)
+        control_inner.pack(fill="x", padx=20, pady=20)
+        
+        self.btn_reset_everything = ctk.CTkButton(control_inner, text="Reset everything", fg_color="#2D1616", anchor="center",
+                            command=lambda: self.start_collection("reset"), width=150, height=45, font=("Inter", 12, "bold"))
+        self.btn_reset_everything.pack(side="left", padx=(15, 0), pady=12)
+        CTKTooltip(self.btn_reset_everything, "Wipe all repositories to start fresh.")
+
+        self.btn_stop = ctk.CTkButton(control_inner, text="Stop Process", fg_color="#da372c", hover_color="#a92e25",
                                      command=self.stop_collection, width=150, height=45, font=("Inter", 12, "bold"), state="disabled")
         self.btn_stop.pack(side="left", padx=15, pady=12)
         CTKTooltip(self.btn_stop, "Gracefully abort the currently running collection or repair task.")
         
-        status_info = ctk.CTkFrame(control_bar, fg_color="transparent")
+        status_info = ctk.CTkFrame(control_inner, fg_color="transparent")
         status_info.pack(side="left", fill="x", expand=True, padx=10)
         
         status_top = ctk.CTkFrame(status_info, fg_color="transparent")
@@ -712,9 +801,18 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.col_progress.pack(fill="x", pady=(5, 0))
         self.col_progress.set(0)
 
-        # Loader animation state
-        self.loader_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        self.loader_idx = 0
+        # Track collector buttons for disabling
+        self.collector_action_btns = [
+            self.btn_download_rules, self.btn_update_rules, self.btn_edit_sources,
+            self.btn_extract_rules, 
+            self.btn_fix_rules_ai, self.btn_open_prob, 
+            self.btn_promote_fixed, self.btn_reset_everything, self.btn_remove_blacklist
+        ]
+        
+        # Check if Downloaded Public Rules folder exist to disable Download Rules button
+        self.check_download_button_state()
+
+        # Loader animation state initialized in __init__
 
         # 3. Log Console
         dash = ctk.CTkFrame(view, fg_color="transparent")
@@ -748,9 +846,10 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.analysis_loader.configure(text="")
             return
         
-        self.analysis_loader.configure(text=self.loader_frames[self.loader_idx % len(self.loader_frames)])
+        frame = self.loader_frames[self.loader_idx % len(self.loader_frames)]
+        self.analysis_loader.configure(text=f"LOADING {frame}")
         self.loader_idx += 1
-        self.after(80, self.animate_analysis_loader)
+        self.after(100, self.animate_analysis_loader)
 
     def log_col(self, msg, type="info"):
         from datetime import datetime
@@ -946,7 +1045,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         header = ctk.CTkFrame(view, fg_color="transparent")
         header.pack(fill="x", pady=(0, 20))
         ctk.CTkLabel(header, text="YARA Search", font=("Inter", 24, "bold")).pack()
-        ctk.CTkLabel(header, text="High-performance rule discovery across all repositories", 
+        ctk.CTkLabel(header, text="Rule discovery across all YARA rules", 
                      text_color=CLR_TEXT_DIM, font=("Inter", 12)).pack()
 
         # 2. Search Controls
@@ -1009,7 +1108,8 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         STORAGE_DIR = base_dir / "Downloaded Public Rules"
         QUARANTINE_DIR = base_dir / "Problematic Rules"
         ENV_SPECIFIC_DIR = base_dir / "Environment-specific Rules"
-        FIXED_DIR = base_dir / "Fixed Rules"
+        # No longer indexing Duplicate Rules folder as logic changed to log file
+        # DUPLICATE_RULES_DIR = base_dir / "Duplicate Rules"
         
         master_file = MASTER_DIR / "public_master_rules.yara"
         
@@ -1019,7 +1119,8 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             
             def index_file(f_path):
                 try:
-                    content = f_path.read_text(encoding='utf-8', errors='ignore')
+                    # Sanitize null characters from source rules
+                    content = f_path.read_text(encoding='utf-8', errors='ignore').replace('\x00', ' ')
                     # Split into rules
                     rules = re.findall(r'(?m)^((?:(?:global|private)\s+)?rule\s+([\w\.]+).*?\{.*?^\})', content, re.DOTALL | re.MULTILINE)
                     for full_rule, rname in rules:
@@ -1053,18 +1154,20 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 if master_file.exists():
                     index_file(master_file)
 
-                # 2. Index all folders and subfolders
-                for d in [MASTER_DIR, STORAGE_DIR, QUARANTINE_DIR, ENV_SPECIFIC_DIR, FIXED_DIR]:
+                # Index all folders and subfolders
+                for d in [MASTER_DIR, STORAGE_DIR, QUARANTINE_DIR, ENV_SPECIFIC_DIR]:
                     if d.exists():
-                        for f in d.rglob("*.yar*"):
-                            if f.resolve() == master_file.resolve(): continue
-                            index_file(f)
+                        for f in d.rglob("*"):
+                            if f.is_file() and f.suffix.lower() in [".yar", ".yara", ".rule", ".rules"]:
+                                if f.resolve() == master_file.resolve(): continue
+                                index_file(f)
             else:
                 # Index custom path
                 d = Path(custom_path)
                 if d.exists():
-                    for f in d.rglob("*.yar*"):
-                        index_file(f)
+                    for f in d.rglob("*"):
+                        if f.is_file() and f.suffix.lower() in [".yar", ".yara", ".rule", ".rules"]:
+                            index_file(f)
         
         if not self.search_index:
             messagebox.showwarning("Search Rules", "No rules found in library. Run 'Pull Rules' first.")
@@ -1278,11 +1381,12 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.status_label.configure(text=msg, text_color=color)
 
     def pick_lab_rule_file(self):
-        f = filedialog.askopenfilename(filetypes=[("YARA Rules", "*.yar *.yara"), ("All Files", "*.*")])
+        f = filedialog.askopenfilename(filetypes=[("YARA Rules", "*.yar *.yara *.rule *.rules"), ("All Files", "*.*")])
         if f:
             self.lab_rule_path.set(f)
             try:
-                content = Path(f).read_text(encoding='utf-8', errors='ignore')
+                # Sanitize null characters
+                content = Path(f).read_text(encoding='utf-8', errors='ignore').replace('\x00', ' ')
                 self.lab_editor.delete("1.0", "end")
                 self.lab_editor.insert("1.0", content)
                 self.on_editor_change()
@@ -1351,6 +1455,9 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
 
         self.is_scanning = True
+        self.abort_collection = False
+        self.btn_stop_analysis.configure(state="normal")
+        self.btn_stop.configure(state="normal")
         self.animate_analysis_loader()
         self.clear_hits_gallery()
         self.log_to_textbox(self.analysis_out, f"[*] Target: {os.path.basename(path)}\n", clear=True)
@@ -1361,24 +1468,43 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 # 1. Recursive YARA loading
                 yara_files = {}
                 folder = Path(rules_dir)
-                for p in folder.rglob("*"):
-                    if p.is_file() and p.suffix.lower() in [".yara", ".yar"]:
-                        ns = p.name
-                        base_ns = ns
-                        counter = 1
-                        while ns in yara_files:
-                            ns = f"{base_ns}_{counter}"
-                            counter += 1
-                        yara_files[ns] = str(p.absolute())
+                yara_exts = ["*.yar", "*.yara", "*.rule", "*.rules"]
+                for ext in yara_exts:
+                    for p in folder.rglob(ext):
+                        if p.is_file():
+                            ns = p.name
+                            base_ns = ns
+                            counter = 1
+                            while ns in yara_files:
+                                ns = f"{base_ns}_{counter}"
+                                counter += 1
+                            yara_files[ns] = str(p.absolute())
                 
                 if not yara_files:
                     self.after(0, lambda: self.log_to_textbox(self.analysis_out, "[!] No YARA files found in directory.\n"))
                     self.is_scanning = False
                     return
 
-                self.after(0, lambda: self.log_to_textbox(self.analysis_out, f"[*] Compiling {len(yara_files)} YARA files...\n"))
+                # Stable fingerprint calculation
+                sorted_files = sorted(yara_files.items())
+                current_fingerprint_list = []
+                for ns, p_str in sorted_files:
+                    try:
+                        current_fingerprint_list.append((ns, p_str, os.path.getmtime(p_str)))
+                    except:
+                        current_fingerprint_list.append((ns, p_str, 0))
+
                 self.rules_mapping = yara_files
-                rules = yara.compile(filepaths=yara_files)
+                
+                # Check cache
+                if self.scanner_cached_rules and getattr(self, 'scanner_last_fingerprint_list', None) == current_fingerprint_list:
+                    self.after(0, lambda: self.log_to_textbox(self.analysis_out, "[*] Using cached compiled rules (Speedup!)\n"))
+                    rules = self.scanner_cached_rules
+                else:
+                    self.after(0, lambda: self.log_to_textbox(self.analysis_out, f"[*] Compiling {len(yara_files)} YARA files...\n"))
+                    rules = yara.compile(filepaths=yara_files)
+                    self.scanner_cached_rules = rules
+                    self.scanner_last_fingerprint_list = current_fingerprint_list
                 
                 # 2. Scanning Execution
                 self.after(0, lambda: self.log_to_textbox(self.analysis_out, "[*] Scan in progress...\n"))
@@ -1396,6 +1522,9 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     self.after(0, lambda: self.log_to_textbox(self.analysis_out, f"[*] Batch mode: {total_f} files detected.\n"))
                     
                     for i, pkg in enumerate(target_files):
+                        if self.abort_collection:
+                            self.after(0, lambda: self.log_to_textbox(self.analysis_out, "[!] SCAN ABORTED BY USER.\n"))
+                            break
                         try:
                             m_list = rules.match(str(pkg))
                             for m in m_list: final_matches.append((pkg.name, m))
@@ -1411,6 +1540,8 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         threading.Thread(target=task, daemon=True).start()
 
     def finish_file_scan(self, final_results):
+        self.btn_stop_analysis.configure(state="disabled")
+        self.btn_stop.configure(state="disabled")
         # final_results: list of (filename, match_obj)
         def ui_update():
             self.is_scanning = False
@@ -1570,6 +1701,30 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.lab_status.configure(text=f"ERROR: {err_msg}", text_color=CLR_ERROR)
             return None
 
+    def lab_beautify_rule(self):
+        """Beautifies all rules in the editor while preserving the rest of the text."""
+        raw = self.lab_editor.get("1.0", "end-1c")
+        if not raw.strip(): return
+        
+        parse_results = self.surgical_yara_parse(raw)
+        rules = parse_results['rules']
+        
+        if not rules:
+            self.lab_status.configure(text_color=CLR_ERROR, text="Beautify Failed: No rules detected in editor.")
+            return
+
+        # Replace rules from back to front to maintain indices
+        new_text = raw
+        for r in reversed(rules):
+            pretty = self.beautify_yara_rule(r['name'], r['full_text'])
+            new_text = new_text[:r['start']] + pretty + new_text[r['end']:]
+            
+        self.lab_editor.delete("1.0", "end")
+        self.lab_editor.insert("1.0", new_text)
+        self.after(0, self.redraw_line_numbers)
+        self.after(50, lambda: self.apply_highlighting(force=True))
+        self.lab_status.configure(text_color=CLR_ACCENT, text="Rule(s) beautified successfully.")
+
     def fix_rule_ai(self):
         # 1. State check
         if self.is_scanning: return
@@ -1615,7 +1770,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.after(0, lambda: self.update_status("AI is analyzing rule...", "warn"))
                 self.after(0, lambda: self.lab_status.configure(text="✨ AI Repair in progress...", text_color="#BD93F9"))
                 
-                prompt = f"Fix the following YARA rule. It has a syntax error: {error_msg}\n\n### RULE CONTENT ###\n{raw}\n\n### FIXED RULE ###\nReturn ONLY the corrected YARA rule content. No markdown, no explanations."
+                prompt = f"Fix the following YARA rule. It may has a syntax error or name error, comment error or anything else. : {error_msg}\n\n### RULE CONTENT ###\n{raw}\n\n### FIXED RULE ###\nReturn ONLY the corrected YARA rule content. No markdown, no explanations."
                 
                 headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
                 payload = {
@@ -1678,10 +1833,14 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
 
         self.is_scanning = True
+        self.abort_collection = False
+        self.btn_stop_lab.configure(state="normal")
+        self.btn_stop.configure(state="normal")
         
         # Clear tables
-        for item in self.hit_tree.get_children(): self.hit_tree.delete(item)
-        for item in self.clean_tree.get_children(): self.clean_tree.delete(item)
+        for tree in [self.hit_tree, self.clean_tree, self.string_tree]:
+            for item in tree.get_children(): tree.delete(item)
+            
         self.log_to_textbox(self.summary_box, "", clear=True)
         self.res_view.set("Detections")
         
@@ -1689,7 +1848,20 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         raw_rule = self.lab_editor.get("1.0", "end-1c")
         all_rule_names = re.findall(r'rule\s+([\w\.]+)', raw_rule)
         rule_stats = {name: 0 for name in all_rule_names}
-
+        
+        # ROBUST REGEX: Match $identifier anywhere but within strings/comments
+        # Handles indentation and start-of-line definitions
+        str_defs = re.findall(r'(?m)^\s*(\$[\w\d]*)\s*=', raw_rule)
+        unique_string_ids = sorted(list(set(str_defs)))
+        string_contents = {}
+        for sid in unique_string_ids:
+            # More permissive search for the content
+            m_val = re.search(re.escape(sid) + r'\s*=\s*("(?:\\.|[^"\\])*"|\{.*?\})', raw_rule, re.DOTALL)
+            string_contents[sid] = m_val.group(1).strip() if m_val else "..."
+        
+        # string_matrix[string_id][filename_key] = count
+        string_matrix = {sid: {} for sid in unique_string_ids}
+        
         self.log_to_textbox(self.summary_box, f"[*] Starting Batch Scan\n[*] Target: {target}\n\n")
 
         def task():
@@ -1701,65 +1873,150 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 total = len(f_paths)
                 self.after(0, lambda: self.log_to_textbox(self.summary_box, f"[*] Found {total} files. Starting scan...\n"))
                 
-                hits_total = 0
-                clean_count = 0
-                clean_files_list = []
+                scan_stats = {"hits": 0, "clean": 0, "err": 0}
+                hit_filenames: list[str] = [] 
+                hit_data_list: list[tuple] = []
+                clean_files_list: list[tuple] = []
                 
                 for i, p in enumerate(f_paths):
+                    if self.abort_collection:
+                        self.after(0, lambda: self.log_to_textbox(self.summary_box, "[!] SCAN ABORTED BY USER.\n"))
+                        break # Allow abort
+                    p_abs = str(p.absolute())
                     try:
-                        matches = rules.match(str(p))
-                        p_abs = str(p.absolute())
+                        matches = rules.match(p_abs, timeout=10)
                         md5 = self.get_md5(p_abs)
                         if matches:
-                            hits_total += 1
+                            scan_stats["hits"] += 1
+                            fn = p.name
+                            hit_filenames.append(fn)
                             rnames = ", ".join([m.rule for m in matches])
-                            for m in matches: rule_stats[m.rule] += 1
-                            # Real-time Hit insertion with MD5 and row number
-                            self.after(0, lambda n=p.name, r=rnames, h=md5, f=p_abs, idx=hits_total: 
-                                        self.hit_tree.insert("", "end", values=(idx, n, r, h, f)))
+                            hit_str_ids = []
+                            for m in matches: 
+                                rule_stats[m.rule] = rule_stats.get(m.rule, 0) + 1
+                                # Collect string hits (Modern YARA-python returns objects, old returns tuples)
+                                for s_match in m.strings:
+                                    if hasattr(s_match, 'instances'):
+                                        # Modern style: yara.StringMatch object
+                                        sid_str = s_match.identifier
+                                        count = len(s_match.instances)
+                                    else:
+                                        # Old style: tuple (offset, identifier, data)
+                                        sid_str = s_match[1]
+                                        count = 1
+                                    
+                                    sid_str = sid_str.decode('utf-8', errors='ignore') if isinstance(sid_str, bytes) else str(sid_str)
+                                    full_sid = sid_str if sid_str.startswith('$') else f"${sid_str}"
+                                    hit_str_ids.append(full_sid)
+                                    
+                                    if full_sid in string_matrix:
+                                        string_matrix[full_sid][fn] = string_matrix[full_sid].get(fn, 0) + count
+                                    else:
+                                        # Case-insensitive fallback
+                                        for key in string_matrix:
+                                            if key.lower() == full_sid.lower():
+                                                string_matrix[key][fn] = string_matrix[key].get(fn, 0) + count
+                                                break
+                            
+                            unique_hits = sorted(list(set(hit_str_ids)))
+                            self.after(0, lambda f=fn, s=unique_hits: 
+                                         self.log_to_textbox(self.summary_box, f"[+] {f} hit by strings: {', '.join(s) if s else 'None (Condition Only)'}\n"))
+                            
+                            hit_data_list.append((int(scan_stats["hits"]), fn, rnames, md5, p_abs))
                         else:
-                            clean_count += 1
-                            clean_files_list.append((clean_count, p.name, md5, p_abs))
+                            scan_stats["clean"] += 1
+                            clean_files_list.append((scan_stats["clean"], p.name, md5, p_abs))
                         
-                        if i % 10 == 0:
-                            self.after(0, lambda i=i, t=total: self.update_status(f"Scanning... {i}/{t}", "ok"))
-                    except: pass
+                    except Exception as fe:
+                        scan_stats["err"] += 1
+                        self.after(0, lambda p=p.name, e=str(fe): self.log_to_textbox(self.summary_box, f"[!] Scan Error ({p}): {e}\n"))
+                    
+                    if i % 10 == 0:
+                        self.after(0, lambda i=i, t=total: self.update_status(f"Scanning... {i+1}/{t}", "ok"))
 
                 def finalize():
-                    # Batch insert Clean files for performance
-                    for idx, name, md5, path in clean_files_list:
-                        self.clean_tree.insert("", "end", values=(idx, name, md5, path))
+                    # atomic thread sync: clear data
+                    for t in [self.hit_tree, self.clean_tree, self.string_tree]:
+                        for item in t.get_children(): t.delete(item)
 
-                    # Auto-fit columns based on new data
+                    # Update Detections
+                    for row in hit_data_list: self.hit_tree.insert("", "end", values=row)
+                    
+                    # Update Undetected
+                    for row in clean_files_list: self.clean_tree.insert("", "end", values=row)
+
+                    # Update String Matrix Matrix
+                    display_f = hit_filenames[:50] # Support up to 50 files in matrix
+                    cids = ["String ID", "Content"] + [f"col_{j}" for j in range(len(display_f))]
+                    # Just the filename, uppercase, truncated if too long
+                    clabs = ["STRING ID", "CONTENT"] + [fn.upper()[-20:] for fn in display_f]
+                    
+                    self.string_tree["columns"] = tuple(cids)
+                    for j, cid in enumerate(cids):
+                        self.string_tree.heading(cid, text=clabs[j])
+                        # Force a minimum width to enable horizontal scrolling instead of cramping
+                        w = 150 if j < 2 else 120
+                        self.string_tree.column(cid, width=w, minwidth=100, stretch=False, anchor="center" if j >= 2 else "w")
+                    
+                    for sid in unique_string_ids:
+                        rvals = [sid, string_contents.get(sid, "")]
+                        for fn_match in display_f:
+                            val = string_matrix[sid].get(fn_match, 0)
+                            # Alternative display: Show checkmark if hit
+                            rvals.append(f"✔️ {val}" if val > 0 else "·")
+                        self.string_tree.insert("", "end", values=rvals)
+
+                    # Finalize UI
+                    self.is_scanning = False
+                    self.btn_stop_lab.configure(state="disabled")
+                    self.btn_stop.configure(state="disabled")
+                    self.log_to_textbox(self.summary_box, f"=== SCAN FINISHED ===\n")
+                    self.log_to_textbox(self.summary_box, f"Detections: {len(hit_data_list)}\n")
+                    self.log_to_textbox(self.summary_box, f"Undetected: {len(clean_files_list)}\n")
+                    if scan_stats["err"]: self.log_to_textbox(self.summary_box, f"Errors encountered: {scan_stats['err']}\n")
+                    
+                    # Rule Efficacy Statistics
+                    hit_rank = sorted([(r, c) for r, c in rule_stats.items() if c > 0], key=lambda x: x[1], reverse=True)
+                    if hit_rank:
+                        self.log_to_textbox(self.summary_box, "\nRULE EFFICACY:\n")
+                        for rname, count in hit_rank:
+                            self.log_to_textbox(self.summary_box, f"  - {rname}: {count} file hits\n")
+                    
+                    self.log_to_textbox(self.summary_box, "\n")
+                    
+                    res_text = f"FINISHED: {len(hit_data_list)} hits found" if hit_data_list else "FINISHED: No hits"
+                    res_color = CLR_SUCCESS if hit_data_list else CLR_TEXT_DIM
+                    self.lab_status.configure(text=res_text, text_color=res_color)
+                    self.update_status(f"Scan complete. {len(hit_data_list)} found.", "ok")
+                    
+                    # Refresh All Tabs - Force deep update for visibility
+                    self.res_view.update_idletasks()
+                    self.summary_box.update_idletasks()
+                    self.hit_tree.update_idletasks()
+                    
+                    # Small delay to ensure render thread finishes buffer swaps
+                    self.after(50, lambda: self.res_view.update())
+                    
+                    # Auto-fit
                     self.auto_fit_columns(self.hit_tree)
                     self.auto_fit_columns(self.clean_tree)
+                    self.auto_fit_columns(self.string_tree)
 
-                    self.is_scanning = False
-                    self.log_to_textbox(self.summary_box, f"=== SCAN FINISHED ===\n")
-                    self.log_to_textbox(self.summary_box, f"Files Scanned: {total}\n")
-                    self.log_to_textbox(self.summary_box, f"Total Hits: {hits_total}\n\n")
-                    
-                    # Log Stats
-                    hit_rank = sorted([(r, c) for r, c in rule_stats.items()], key=lambda x: x[1], reverse=True)
-                    self.log_to_textbox(self.summary_box, "RULE EFFICACY:\n")
-                    for r, count in hit_rank:
-                        self.log_to_textbox(self.summary_box, f"  - {r}: {count} hits\n")
-                    
-                    if hits_total == 0:
-                        self.after(0, lambda: self.res_view.set("Summary"))
-                        self.update_status(f"Scan Complete: No hits found in {total} files", "ok")
+                    if not hit_data_list: 
+                        self.res_view.set("Summary")
                     else:
-                        self.update_status(f"Scan Complete: {hits_total} hits / {total} files", "ok")
-                    
-                    self.lab_status.configure(text=f"FINISHED: {hits_total} hits found", text_color="#2ECC71")
+                        self.res_view.set("Detections")
 
                 self.after(0, finalize)
             except Exception as e:
                 self.after(0, lambda e=e: self.show_scan_error(str(e)))
 
         threading.Thread(target=task, daemon=True).start()
-
+    
     def show_scan_error(self, err):
+        self.is_scanning = False
+        self.btn_stop_lab.configure(state="disabled")
+        self.btn_stop.configure(state="disabled")
         self.update_status(f"Scan Error", "error")
         self.lab_status.configure(text=f"SCAN ERROR: {err}", text_color=CLR_ERROR)
 
@@ -1796,6 +2053,91 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         else:
             self.update_status(f"No MD5s in {active_tab}", "error")
 
+    def check_download_button_state(self):
+        if getattr(sys, 'frozen', False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).parent.parent
+            
+        public_rules_dir = base_dir / "Downloaded Public Rules"
+        if public_rules_dir.exists() and any(public_rules_dir.iterdir()):
+            self.btn_download_rules.configure(state="disabled")
+            self.btn_update_rules.configure(state="normal")
+            CTKTooltip(self.btn_download_rules, "Rules already downloaded. Use 'Update Rules' to sync changes.")
+            CTKTooltip(self.btn_update_rules, "Smart update of existing rules (git pull, zip refresh, file hash check).")
+        else:
+            self.btn_download_rules.configure(state="normal")
+            self.btn_update_rules.configure(state="disabled")
+            CTKTooltip(self.btn_download_rules, "Initial download of all YARA rules from configured sources.")
+            CTKTooltip(self.btn_update_rules, "Download rules first before updating.")
+            
+        prob_dir = base_dir / "Problematic Rules"
+        if prob_dir.exists():
+            self.btn_open_prob.configure(state="normal")
+            self.btn_promote_fixed.configure(state="normal")
+            self.btn_fix_rules_ai.configure(state="normal")
+            CTKTooltip(self.btn_open_prob, "Quickly browse quarantined rules in file explorer.")
+            CTKTooltip(self.btn_promote_fixed, "Scan 'Problematic Rules' folder, apply basic fixes, and merge valid ones back to Master.")
+            CTKTooltip(self.btn_fix_rules_ai, "Use AI logic to repair complex syntax errors in quarantined rules.")
+        else:
+            self.btn_open_prob.configure(state="disabled")
+            self.btn_promote_fixed.configure(state="disabled")
+            self.btn_fix_rules_ai.configure(state="disabled")
+            CTKTooltip(self.btn_open_prob, "No problematic rules folder found yet. Extract broken rules first.")
+            CTKTooltip(self.btn_promote_fixed, "No problematic rules folder found yet. Extract broken rules first.")
+            CTKTooltip(self.btn_fix_rules_ai, "No problematic rules folder found yet. Extract broken rules first.")
+
+    def edit_sources(self):
+        if getattr(sys, 'frozen', False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).parent.parent
+        src_file = base_dir / "config" / "yara_sources.txt"
+        if src_file.exists():
+            try:
+                os.startfile(src_file)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to open source file: {str(e)}")
+        else:
+            messagebox.showwarning("Warning", "yara_sources.txt not found.")
+
+    def repo_cleanup(self, directory):
+        directory = Path(directory)
+        if not directory.exists(): return
+        # Keep .git and rules
+        for item in directory.rglob("*"):
+            if item.is_file():
+                if ".git" in item.parts: continue
+                if item.suffix.lower() not in [".yar", ".yara", ".rule", ".rules"]:
+                    try: item.unlink()
+                    except: pass
+        # Remove empty dirs (bottom-up)
+        for item in sorted(list(directory.rglob("*")), key=lambda x: len(str(x)), reverse=True):
+            if item.is_dir() and ".git" not in item.parts:
+                try:
+                    if not any(item.iterdir()):
+                        item.rmdir()
+                except: pass
+
+    def open_problematic_folder(self):
+        if getattr(sys, 'frozen', False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).parent.parent
+            
+        prob_dir = base_dir / "Problematic Rules"
+        prob_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            if sys.platform == "win32":
+                os.startfile(prob_dir)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", str(prob_dir)])
+            else:
+                subprocess.run(["xdg-open", str(prob_dir)])
+        except Exception as e:
+            self.update_status(f"Error opening folder: {str(e)}", "error")
+
     def start_collection(self, mode="update"):
         if self.is_scanning: return
         
@@ -1813,10 +2155,22 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.abort_collection = False
         threading.Thread(target=self.collection_task, args=(mode,), daemon=True).start()
 
+        # Status footer in sidebar
+        self.status_label = ctk.CTkLabel(self.sidebar, text="Status: All good!", font=("Inter", 11), text_color=CLR_SUCCESS)
+        self.status_label.grid(row=9, column=0, pady=20)
+
     def stop_collection(self):
         if self.is_scanning:
             self.abort_collection = True
             self.log_col("ABORT SIGNAL SENT. Terminating sequence...", "error")
+            # Disable Stop buttons instantly to prevent double-click
+            self.btn_stop.configure(state="disabled")
+            self.btn_stop_analysis.configure(state="disabled")
+            self.btn_stop_lab.configure(state="disabled")
+            
+            self.update_status("Stopping...", "warn")
+            self.collector_status.set("Aborting...")
+            self.log_to_textbox(self.analysis_out, "\n[!] STOP REQUESTED...\n")
 
     def collection_task(self, mode):
         if getattr(sys, 'frozen', False):
@@ -1828,33 +2182,38 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         OUTPUT_FILE = MASTER_DIR / "public_master_rules.yara"
         QUARANTINE_DIR = base_dir / "Problematic Rules"
         ENV_SPECIFIC_DIR = base_dir / "Environment-specific Rules"
-        FIXED_DIR = base_dir / "Fixed Rules"
-        PROBLEMATIC_LIST_FILE = base_dir / "problematic_rules.txt"
+        # Log file in base directory as requested
+        DUPLICATE_LOG_FILE = base_dir / "duplicate_rules_log.txt"
+        PROBLEMATIC_LIST_FILE = QUARANTINE_DIR / "problematic_rules.txt"
         SOURCE_LOG_FILE = base_dir / "source_error_log.txt"
         SOURCES_FILE = base_dir / "config" / "yara_sources.txt"
         try:
             if mode == "reset":
                 self.after(0, lambda: self.collector_status.set("Reset Started..."))
                 self.log_col("Wiping all rule repositories...", "warn")
-                for d in [STORAGE_DIR, TEMP_DIR, QUARANTINE_DIR, FIXED_DIR, ENV_SPECIFIC_DIR]:
+                for d in [STORAGE_DIR, TEMP_DIR, QUARANTINE_DIR, ENV_SPECIFIC_DIR]:
                     if d.exists(): shutil.rmtree(d)
                 if OUTPUT_FILE.exists(): OUTPUT_FILE.unlink()
                 if PROBLEMATIC_LIST_FILE.exists(): PROBLEMATIC_LIST_FILE.unlink()
                 if SOURCE_LOG_FILE.exists(): SOURCE_LOG_FILE.unlink()
+                if DUPLICATE_LOG_FILE.exists(): DUPLICATE_LOG_FILE.unlink()
                 
                 self.after(0, lambda: self.collector_status.set("Nuclear Reset Complete."))
                 self.log_col("Task complete: All repositories wiped.", "success")
                 self.after(0, lambda: self.col_progress.set(1))
+                self.after(0, lambda: self.btn_download_rules.configure(state="normal"))
                 return # End here, do not download
 
             # Directory creation
-            needed_dirs = [MASTER_DIR, QUARANTINE_DIR, ENV_SPECIFIC_DIR]
-            if mode == "update": 
+            needed_dirs = [MASTER_DIR]
+            if mode in ["update", "download"]: 
                 needed_dirs += [STORAGE_DIR, TEMP_DIR]
+            elif mode == "deduplicate":
+                pass # Delay creation until duplicate found
             
             [d.mkdir(parents=True, exist_ok=True) for d in needed_dirs]
 
-            if mode == "update":
+            if mode in ["update", "download"]:
                 self.after(0, lambda: self.collector_status.set("Downloading Sources..."))
                 sources = []
                 if SOURCES_FILE.exists():
@@ -1901,159 +2260,177 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
                 for i, url in enumerate(sources):
                     if self.abort_collection: break
-                    self.after(0, lambda u=url: self.collector_status.set(f"Pulling: {urlparse(u).path.split('/')[-1]}"))
+                    self.after(0, lambda u=url: self.collector_status.set(f"Processing: {urlparse(u).path.split('/')[-1]}"))
                     repo_name = urlparse(url).path.strip("/").replace("/", "_")
+                    target_repo_dir = STORAGE_DIR / repo_name
                     zip_path = TEMP_DIR / f"{repo_name}.zip"
                     
                     try:
-                        is_raw = url.endswith((".yar", ".yara")) or "gist.githubusercontent.com" in url
-                        if url.endswith(".zip"):
+                        is_raw = url.endswith((".yar", ".yara", ".rule", ".rules")) or "gist.githubusercontent.com" in url
+                        is_zip = url.endswith(".zip")
+                        is_git = "github.com" in url and not is_raw and not is_zip
+                        
+                        if mode == "update" and is_git and (target_repo_dir / ".git").exists():
+                            # Git update logic
+                            self.after(0, lambda n=repo_name: self.log_col(f"Git pulling: {n}", "info"))
+                            res = subprocess.run(["git", "pull"], cwd=str(target_repo_dir), capture_output=True, text=True)
+                            if res.returncode == 0:
+                                self.after(0, lambda n=repo_name: self.log_col(f"Git update success: {n}", "success"))
+                                self.repo_cleanup(target_repo_dir)
+                            else:
+                                self.after(0, lambda n=repo_name, e=res.stderr: self.log_col(f"Git pull failed for {n}: {e[:50]}", "error"))
+                            continue
+
+                        if mode == "update" and is_raw:
+                            # File hash comparison logic
+                            rule_name = url.split("/")[-1] if not url.endswith("/") else "rule.yar"
+                            local_file = target_repo_dir / rule_name
+                            
+                            r = requests.get(url, headers=headers, timeout=30)
+                            if r.status_code == 200:
+                                new_content = r.content
+                                new_hash = hashlib.md5(new_content).hexdigest()
+                                
+                                if local_file.exists():
+                                    with open(local_file, "rb") as f:
+                                        old_hash = hashlib.md5(f.read()).hexdigest()
+                                    
+                                    if new_hash == old_hash:
+                                        self.after(0, lambda n=rule_name: self.log_col(f"No update needed for {n} (hash match)", "info"))
+                                        continue
+                                    else:
+                                        self.after(0, lambda n=rule_name: self.log_col(f"Hashing mismatch - updating {n}", "info"))
+                                
+                                target_repo_dir.mkdir(parents=True, exist_ok=True)
+                                with open(local_file, "wb") as f:
+                                    f.write(new_content)
+                                self.after(0, lambda n=rule_name: self.log_col(f"File downloaded: {n}", "success"))
+                                continue
+
+                        # Default download/refresh logic (for zip or initial download or if git repo not cloned)
+                        if is_zip:
                             r = requests.get(url, headers=headers, timeout=60, stream=True)
                         elif is_raw:
                             r = requests.get(url, headers=headers, timeout=30, stream=True)
-                        else:
+                        elif is_git:
+                            # For git repo not yet cloned, we could clone it or just download zip as before.
+                            # The user said "for git folder just git pull", implying they might be folders.
+                            # If we use git clone, we need git. Let's try git clone if git is there.
+                            try:
+                                subprocess.run(["git", "--version"], capture_output=True)
+                                self.after(0, lambda n=repo_name: self.log_col(f"Git cloning: {n}", "info"))
+                                res = subprocess.run(["git", "clone", url, str(target_repo_dir)], capture_output=True, text=True)
+                                if res.returncode == 0:
+                                    self.after(0, lambda n=repo_name: self.log_col(f"Git clone success: {n}", "success"))
+                                    self.repo_cleanup(target_repo_dir)
+                                    continue
+                            except:
+                                pass # Fallback to zip download
+                            
                             r = requests.get(url + "/archive/refs/heads/master.zip", headers=headers, timeout=30, stream=True)
                             if r.status_code != 200:
                                 r = requests.get(url + "/archive/refs/heads/main.zip", headers=headers, timeout=30, stream=True)
-                        
-                        if r.status_code == 200:
-                            if is_raw and not url.endswith(".zip"):
-                                # Handle single rule files
-                                rule_name = url.split("/")[-1] if not url.endswith("/") else "rule.yar"
-                                (STORAGE_DIR / repo_name).mkdir(parents=True, exist_ok=True)
-                                with open(STORAGE_DIR / repo_name / rule_name, "wb") as f:
-                                    for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
-                                self.after(0, lambda n=repo_name: self.log_col(f"YARA rules downloaded: {n}", "success"))
-                                continue # Skip zip extraction logic
+                        else:
+                            r = requests.get(url, headers=headers, timeout=30, stream=True)
 
-                            with open(zip_path, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
-                            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                                zip_ref.extractall(STORAGE_DIR / repo_name)
-                            self.after(0, lambda n=repo_name: self.log_col(f"YARA rules downloaded: {n}", "success"))
+                        if r.status_code == 200:
+                            if is_raw and not is_zip:
+                                rule_name = url.split("/")[-1] if not url.endswith("/") else "rule.yar"
+                                target_repo_dir.mkdir(parents=True, exist_ok=True)
+                                with open(target_repo_dir / rule_name, "wb") as f:
+                                    for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+                                self.after(0, lambda n=repo_name: self.log_col(f"File downloaded: {n}", "success"))
+                            else:
+                                with open(zip_path, 'wb') as f:
+                                    for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+                                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                                    zip_ref.extractall(target_repo_dir)
+                                self.after(0, lambda n=repo_name: self.log_col(f"Rules downloaded/refreshed: {n}", "success"))
                         else:
                             self.after(0, lambda u=url: self.log_col(f"Source unavailable: {u}", "warn"))
                     except Exception as ex:
-                        self.after(0, lambda ex=ex: self.log_col(f"Pull error: {str(ex)[:60]}", "error"))
+                        self.after(0, lambda ex=ex: self.log_col(f"Task error: {str(ex)[:60]}", "error"))
                     self.after(0, lambda p=(i+1)/len(sources)*0.4: self.col_progress.set(p))
 
-                # Rebuild Master
+                # Rebuild Master (Deduplication and Merging)
                 self.after(0, lambda: self.collector_status.set("Rebuilding Master File..."))
-                files = sorted(list(STORAGE_DIR.rglob("*.yar*")))
-                proc_rules = {}
+                
+                yara_exts = [".yar", ".yara", ".rule", ".rules"]
+                files = sorted([f for f in STORAGE_DIR.rglob("*") if f.is_file() and f.suffix.lower() in yara_exts])
                 global_imports = set()
+                proc_rules = []
                 
                 for i, f in enumerate(files):
-                    content = self.resolve_includes_gui(f)
                     if self.abort_collection: break
-                    # Surgical extraction - STRICT regex
-                    matches = list(re.finditer(r'(?m)^\s*(?:(?:global|private)\s+)?rule\s+([\w\.]+)(?:\s*:\s*[\w\s\.]+)?\s*\{', content))
-                    rule_pos = [(m.start(), m.group(1)) for m in matches]
-                    for j in range(len(rule_pos)):
-                        start, rname = rule_pos[j]
-                        # Use deep balancer on full content from rule start.
-                        # Never pre-slice by next-rule position — regex/string braces fool that.
-                        last = self.find_balanced_closing_brace(content, start_index=start)
-                        if last == -1:
-                            continue  # malformed / unbalanced rule, skip it
-                        snippet = content[start:last+1]
-                        # Removed: Silent Drop for Cuckoo/Incompatible modules
-                        for imp in re.findall(r'import\s+"(.*?)"', snippet): global_imports.add(imp)
-                        snippet = re.sub(r'import\s+".*?"\s*\n?', '', snippet)
-                        
-                        # PRE-VALIDATION: Advanced Compilation-Based Categorization
-                        all_known_mods = ["pe", "elf", "macho", "hash", "math", "time", "dotnet", "dex", "lnk", "magic", "cuckoo", "console", "vt", "archive"]
-                        env_specific_mods = ["dotnet", "dex", "lnk", "magic", "cuckoo", "console", "vt", "archive"]
-                        
-                        try:
-                            # Attempt compilation with all possible modules that the LOCAL system supports
-                            available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "hash", "math", "time"])
-                            active_imps = '\n'.join([f'import "{m}"' for m in all_known_mods if m in available_mods])
-                            yara.compile(source=f"{active_imps}\n{snippet}")
-                        except Exception as ve:
-                            err_msg = str(ve)
-                            
-                            # CATEGORIZATION LOGIC:
-                            # We strictly split between Environmental/Dependency issues vs Genuine Syntax Errors.
-                            is_env = 'undefined identifier' in err_msg.lower()
-                            target_dir = ENV_SPECIFIC_DIR if is_env else QUARANTINE_DIR
-                            suffix = "_env.yar" if is_env else "_err.yar"
-                            
-                            if is_env:
-                                id_match = re.search(r'undefined identifier "(.*?)"', err_msg)
-                                missing_id = id_match.group(1) if id_match else "unknown"
-                                self.after(0, lambda r=rname, m=missing_id: self.log_col(f"Env-Specific: {r} requires '{m}' - Moving to support repo", "info"))
-                            else:
-                                self.after(0, lambda r=rname, msg=err_msg[:40]: self.log_col(f"Source Error: {r} is malformed ({msg}) - Saving", "warn"))
-
-                            if not target_dir.exists(): target_dir.mkdir(parents=True, exist_ok=True)
-                            (target_dir / f"{rname}{suffix}").write_text(snippet, encoding='utf-8')
-                            
-                            with open(SOURCE_LOG_FILE, "a", encoding="utf-8") as lf:
-                                lf.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Rule: {rname} | Error: {err_msg}\n")
-                            
-                            if not is_env:
-                                with open(PROBLEMATIC_LIST_FILE, "a", encoding="utf-8") as pf: pf.write(f"{rname}_err\n")
-                            
-                            continue
-
-                        if self.abort_collection: break
-                        
-                        # Handle Name Collisions (Append suffixes if ID already exists)
-                        final_rname = rname
-                        counter = 1
-                        while final_rname in proc_rules:
-                            final_rname = f"{rname}_{counter}"
-                            counter += 1
-                        
-                        if final_rname != rname:
-                            # Robust replacement: ignore leading whitespace and handle optional tags/braces
-                            # We replace only the declaration part while keeping the rest of the snippet
-                            snippet = re.sub(r'(\s*(?:(?:global|private)\s+)?rule\s+)' + re.escape(rname), 
-                                           r'\g<1>' + final_rname, snippet, count=1)
-                        
-                        proc_rules[final_rname] = snippet
+                    content = self.resolve_includes_gui(f)
+                    parse_results = self.surgical_yara_parse(content)
+                    global_imports.update(parse_results['imports'])
+                    
+                    for rule in parse_results['rules']:
+                        proc_rules.append(rule['full_text'])
+                    
                     if i % 100 == 0: self.after(0, lambda i=i, t=len(files): self.col_progress.set(0.4 + (i/t)*0.2))
 
-                # Force include all standard YARA modules to ensure high-grade rule compatibility
-                standard_mods = ["pe", "elf", "macho", "dotnet", "cuckoo", "magic", "hash", "math", "time", "console", "dex", "archive"]
-                available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(standard_mods)
-                for mod in standard_mods:
-                    if mod in available_mods:
-                        global_imports.add(mod)
 
-                with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-                    for imp in sorted(list(global_imports)): f.write(f'import "{imp}"\n')
-                    f.write("\n")
-                    for rcont in proc_rules.values(): f.write(rcont + "\n\n")
-                
-                self.after(0, lambda: self.log_col(f"Master rebuilt: {len(proc_rules)} rules total.", "success"))
-                if self.abort_collection: return
-                mode = "validate" # Cascade to validation
+
+                # Include all standard YARA modules in Master to ensure absolute compatibility
+                global_imports.update(self.standard_yara_imports)
+
+                if not proc_rules and len(files) > 0:
+                     self.after(0, lambda: self.log_col("CRITICAL: Master Rebuild resulted in 0 rules.", "error"))
+                else:
+                    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+                        for imp in sorted(list(global_imports)): f.write(f'import "{imp}"\n')
+                        f.write("\n")
+                        for rcont in proc_rules: f.write(rcont + "\n\n")
+                    self.after(0, lambda: self.log_col(f"Master rebuilt: {len(proc_rules)} rules consolidated.", "success"))
+                # End task after rebuild, do not cascade to validation or other checks per user request
 
             if mode == "validate":
                 if self.abort_collection: return
-                self.after(0, lambda: self.collector_status.set("Validating Rules..."))
-                self.after(0, lambda: self.log_col("Starting Validation Sweep...", "info"))
-                self.validate_master_gui(OUTPUT_FILE, QUARANTINE_DIR, FIXED_DIR, ENV_SPECIFIC_DIR)
+                self.after(0, lambda: self.collector_status.set("Validating Rules (Read-Only)..."))
+                
+                yara_exts = [".yar", ".yara", ".rule", ".rules"]
+                master_files = sorted([f for f in MASTER_DIR.rglob("*") if f.is_file() and f.suffix.lower() in yara_exts])
+                
+                if not master_files:
+                    self.after(0, lambda: self.log_col("No rule files found to validate.", "warn"))
+                else:
+                    for m_file in master_files:
+                        if self.abort_collection: break
+                        self.validate_master_gui(m_file)
+
+            if mode == "extract":
+                if self.abort_collection: return
+                self.after(0, lambda: self.collector_status.set("Auditing & Cleaning Master..."))
+                yara_exts = [".yar", ".yara", ".rule", ".rules"]
+                master_files = sorted([f for f in MASTER_DIR.rglob("*") if f.is_file() and f.suffix.lower() in yara_exts])
+                for m_file in master_files:
+                    if self.abort_collection: break
+                    self.extract_problematic_rules_gui(m_file, QUARANTINE_DIR, ENV_SPECIFIC_DIR)
 
             if mode == "fix":
                 if self.abort_collection: return
                 self.after(0, lambda: self.collector_status.set("Repairing Problematic Rules..."))
                 self.after(0, lambda: self.log_col("Initiating Auto-Fix Engine...", "info"))
-                self.process_quarantine_fixes_gui(QUARANTINE_DIR, FIXED_DIR)
+                self.process_quarantine_fixes_gui(QUARANTINE_DIR)
 
-            if mode == "deduplicate":
-                if self.abort_collection: return
-                self.after(0, lambda: self.collector_status.set("Deduplicating Master Rules..."))
-                self.after(0, lambda: self.log_col("Initiating Intelligent Deduplication Sweep...", "info"))
-                self.deduplicate_directory_rules(MASTER_DIR)
 
             if mode == "ai_repair":
                 if self.abort_collection: return
                 self.after(0, lambda: self.collector_status.set("AI Batch Repairing..."))
                 self.after(0, lambda: self.log_col("Initiating Automated AI Repair Sequence...", "info"))
                 
+                if not QUARANTINE_DIR.exists():
+                    self.after(0, lambda: self.log_col("No problematic rules found to repair.", "warn"))
+                    return
+
+                prob_files = list(QUARANTINE_DIR.glob("*.yar*"))
+                total_prob = len(prob_files)
+                if total_prob == 0:
+                    self.after(0, lambda: self.log_col("Quarantine folder is empty.", "warn"))
+                    return
+
                 # Load AI Config
                 cfg_path = base_dir / "config" / "AI.cfg"
                 if not cfg_path.exists():
@@ -2067,9 +2444,6 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 if not api_key:
                     self.after(0, lambda: messagebox.showerror("AI Error", "No API Key found in config/AI.cfg"))
                     return
-
-                prob_files = list(QUARANTINE_DIR.glob("*.yar*"))
-                total_prob = len(prob_files)
                 for i, f_path in enumerate(prob_files):
                     if self.abort_collection: break
                     rname = f_path.stem
@@ -2078,14 +2452,15 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     content = f_path.read_text(encoding='utf-8', errors='ignore')
                     
                     # Pass 1 & 2
-                    current_code = content
+                    current_code = content.replace('\x00', ' ')
                     error_msg = "Unknown error"
                     try:
                         # Pre-check to get initial error
                         available_mods = set(yara.modules) if hasattr(yara, 'modules') else set()
-                        test_mods = ["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"]
-                        active_imps = '\n'.join([f'import "{m}"' for m in test_mods if m in available_mods]) + '\n'
-                        yara.compile(source=active_imps + content)
+                        # Use user-requested standard set for validation stability
+                        requested_std = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
+                        active_imps = '\n'.join([f'import "{m}"' for m in requested_std if m in available_mods]) + '\n'
+                        yara.compile(source=active_imps + current_code)
                         # If somehow valid already
                         self.after(0, lambda n=rname: self.log_col(f"{n} is already valid - skipping", "info"))
                         continue
@@ -2139,6 +2514,31 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     
                     if i % 10 == 0: self.after(0, lambda p=(i/total_prob): self.col_progress.set(p))
 
+            if mode == "remove_blacklist":
+                if self.abort_collection: return
+                self.after(0, lambda: self.collector_status.set("Removing Blacklisted Rules..."))
+                self.after(0, lambda: self.log_col("Initiating Blacklist Removal Sweep...", "info"))
+                
+                blacklist_file = base_dir / "config" / "blacklist.txt"
+                if not blacklist_file.exists():
+                    self.after(0, lambda: self.log_col("No blacklist file found at config/blacklist.txt", "warn"))
+                    # Create empty one for user convenience
+                    blacklist_file.parent.mkdir(parents=True, exist_ok=True)
+                    blacklist_file.write_text("# Put YARA rule names here, one per line\n", encoding='utf-8')
+                    return
+                
+                blacklist = set()
+                for line in blacklist_file.read_text(encoding='utf-8').splitlines():
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        blacklist.add(line)
+                
+                if not blacklist:
+                    self.after(0, lambda: self.log_col("Blacklist is empty.", "info"))
+                    return
+                
+                self.remove_blacklisted_rules_from_directory(MASTER_DIR, blacklist)
+
             self.after(0, lambda: self.col_progress.set(1.0))
             self.after(0, lambda: self.collector_status.set("Task complete"))
             self.after(0, lambda: self.log_col("Task complete", "success"))
@@ -2148,18 +2548,25 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             if TEMP_DIR.exists(): shutil.rmtree(TEMP_DIR)
             
             # Remove empty folders if they are not needed
-            for d in [FIXED_DIR, QUARANTINE_DIR]:
+            for d in [QUARANTINE_DIR]:
                 if d.exists() and not any(d.iterdir()):
                     try: d.rmdir()
                     except: pass
-            
         except Exception as e:
             self.after(0, lambda e=e: self.log_col(f"TASK STOPPED: {str(e)}", "error"))
             self.after(0, lambda: self.collector_status.set("Task failed"))
         finally:
             self.is_scanning = False
-            self.after(0, lambda: self.btn_stop.configure(state="disabled"))
-            self.after(0, lambda: [b.configure(state="normal") for b in self.collector_action_btns])
+            self.btn_stop.configure(state="disabled")
+            self.btn_stop_analysis.configure(state="disabled")
+            self.btn_stop_lab.configure(state="disabled")
+            
+            def finalize_ui():
+                for b in self.collector_action_btns:
+                    b.configure(state="normal")
+                self.check_download_button_state()
+                
+            self.after(0, finalize_ui)
 
     def resolve_includes_gui(self, path, seen=None):
         if seen is None: seen = set()
@@ -2167,7 +2574,9 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if abs_p in seen or not abs_p.exists(): return ""
         seen.add(abs_p)
         try:
-            with open(abs_p, 'r', encoding='utf-8', errors='ignore') as f: content = f.read()
+            # Sanitize null characters during include resolution
+            with open(abs_p, 'r', encoding='utf-8', errors='ignore') as f: 
+                content = f.read().replace('\x00', ' ')
             def repl(m):
                 inc = m.group(1).strip('"\'')
                 return self.resolve_includes_gui(abs_p.parent / inc, seen)
@@ -2178,141 +2587,719 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         p = Path(folder_path)
         if not p.is_dir(): return
         available_mods = set(yara.modules)
-        test_mods = ["pe","elf","math","hash","dotnet","macho","dex","magic","time","console","archive","cuckoo"]
+        test_mods = [
+            "pe",
+            "elf",
+            "math",
+            "hash",
+            "dotnet",
+            "macho",
+            "magic",
+            "time",
+            "string",
+            "console"
+        ]
         active_mods = [m for m in test_mods if m in available_mods]
         active_imps = '\n'.join([f'import "{m}"' for m in active_mods])
 
-        valid_count = 0
-        total_count = 0
-        for f_path in p.glob("*.yar*"):
+        v_count: int = 0
+        total_files: int = 0
+        
+        # Filter files to only include YARA rule files
+        yara_files = [f for f in p.glob("*") if f.is_file() and f.suffix.lower() in [".yar", ".yara", ".rule", ".rules"]]
+        total_files = len(yara_files)
+
+        for f_path in yara_files:
             if self.abort_collection: break
-            total_count += 1
             try:
-                content = f_path.read_text(encoding='utf-8', errors='ignore')
+                # Sanitize null characters
+                content = f_path.read_text(encoding='utf-8', errors='ignore').replace('\x00', ' ')
                 yara.compile(source=f"{active_imps}\n{content}")
-                valid_count += 1
+                v_count += 1
                 self.after(0, lambda n=f_path.name, d=p.name: self.log_col(f"[+] Recovery Check: {n} in '{d}' is now VALID", "success"))
-                if valid_dest == "master":
-                    with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-                        f.write(f"\n\n// --- Moving Rule: {f_path.name} ---\n")
-                        f.write(content + "\n")
-                    f_path.unlink()
-                    self.after(0, lambda n=f_path.name: self.log_col(f"      -> MOVED to Master Rulebase", "success"))
-                elif valid_dest:
-                    dest = Path(valid_dest)
-                    if dest.resolve() != p.resolve():
-                        dest.mkdir(parents=True, exist_ok=True)
-                        (dest / f_path.name).write_text(content, encoding='utf-8')
-                        f_path.unlink()
-                        self.after(0, lambda n=f_path.name, d=dest.name: self.log_col(f"      -> Moved to '{d}' repository", "success"))
+                
+                if valid_dest:
+                    dest_dir = Path(valid_dest)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    (dest_dir / f_path.name).write_text(content, encoding='utf-8')
+                    try: f_path.unlink()
+                    except: pass
+                    self.after(0, lambda n=f_path.name, d=dest_dir.name: self.log_col(f"      -> Moved to '{d}' repository", "success"))
             except Exception as e:
                 # Less 'alarming' for problematic rule checks
                 self.after(0, lambda n=f_path.name, msg=str(e)[:40]: self.log_col(f"[-] Recovery Check: {n} is still INVALID ({msg})", "info"))
 
-        if total_count > 0:
-            self.after(0, lambda v=valid_count, t=total_count, d=p.name: 
+        if total_files > 0:
+            self.after(0, lambda v=v_count, t=total_files, d=p.name: 
                          self.log_col(f"Sweep Summary for '{d}': {v} recovered / {t} checked", "info" if v==0 else "success"))
 
-    def validate_master_gui(self, master_path, quarantine_dir, fixed_dir, env_specific_dir):
-        # Stage 1: Deep Master Cleanup
-        self.after(0, lambda: self.log_col("Validate and Cleanup Master Rule", "info"))
-        last_error_rule = None
-        rep_count = 0
-        for _ in range(2000): # High ceiling for large files
+    def surgical_yara_parse(self, text):
+        """High-performance single-pass lexical scanner for YARA."""
+        pos = 0
+        length = len(text)
+        rules = []
+        imports = set()
+        
+        in_string = False
+        in_regex = False
+        in_s_comment = False
+        in_m_comment = False
+        
+        brace_depth = 0
+        rule_start = -1
+        rule_name = None
+        
+        word_re = re.compile(r'[a-zA-Z_][\w\.]*')
+        imp_re = re.compile(r'import\s*"(.*?)"')
+        head_re = re.compile(r'(?:(?:global|private)\s+)?rule\s+([^{]+)')
+
+        while pos < length:
+            c = text[pos]
+            nc = text[pos+1] if pos+1 < length else ''
+            
+            # --- State Transitions ---
+            if in_s_comment:
+                if c == '\n': in_s_comment = False
+            elif in_m_comment:
+                if c == '*' and nc == '/':
+                    in_m_comment = False
+                    pos += 1
+            elif in_string:
+                if c == '"' and self._count_preceding_backslashes(text, pos) % 2 == 0:
+                    in_string = False
+                elif c == '\n': in_string = False
+            elif in_regex:
+                if c == '/' and self._count_preceding_backslashes(text, pos) % 2 == 0:
+                    in_regex = False
+                elif c == '\n': in_regex = False
+            else:
+                # --- Code Logic ---
+                if c == '/' and nc == '/':
+                    in_s_comment = True
+                    pos += 1
+                elif c == '/' and nc == '*':
+                    in_m_comment = True
+                    pos += 1
+                elif c == '"':
+                    in_string = True
+                elif c == '/':
+                    # Robust regex detection: look back for operators or keywords that prefix regex literals
+                    k = pos - 1
+                    while k >= 0 and text[k] in ' \t\r\n': k -= 1
+                    is_reg = False
+                    if k >= 0:
+                        if text[k] == '=': is_reg = True
+                        elif text[k] == '~': is_reg = True
+                        elif text[k] in '(,': is_reg = True
+                        elif k >= 6 and text[max(0, k-6):k+1].lower() == 'matches': is_reg = True
+                    
+                    if is_reg: in_regex = True
+                elif c == '{':
+                    if rule_start != -1: brace_depth += 1
+                elif c == '}':
+                    if rule_start != -1:
+                        brace_depth -= 1
+                        if brace_depth == 0:
+                            # Capture the rule text exactly as is - NO MANGLED CLEANING
+                            raw_batch = text[rule_start:pos+1]
+                            rules.append({
+                                'name': rule_name, 
+                                'full_text': raw_batch,
+                                'start': rule_start,
+                                'end': pos+1
+                            })
+                            rule_start = -1
+                            rule_name = None
+                elif c.isalpha() or c == '_':
+                    # Keywords check (Zero-copy match)
+                    m = word_re.match(text, pos)
+                    if m:
+                        word = m.group(0)
+                        if brace_depth == 0:
+                            if word == 'import' and rule_start == -1:
+                                m_imp = imp_re.match(text, pos)
+                                if m_imp:
+                                    imports.add(m_imp.group(1))
+                                    pos = m_imp.end() - 1
+                            elif word in ['rule', 'private', 'global'] and rule_start == -1:
+                                m_head = head_re.match(text, pos)
+                                if m_head:
+                                    rule_start = pos
+                                    raw_header = m_head.group(1).strip()
+                                    # YARA identifier ends at whitespace or ':'
+                                    id_match = re.match(r'^([\w\.]+)', raw_header)
+                                    raw_name = id_match.group(1) if id_match else raw_header
+                                    # Standard YARA Identifiers: [a-zA-Z_][a-zA-Z0-9_]*
+                                    rule_name = "".join([c if (c.isalnum() or c == '_') else '_' for c in raw_name])
+                                    if rule_name and rule_name[0].isdigit():
+                                        rule_name = "r_" + rule_name
+                                    if not rule_name or rule_name == "_":
+                                        rule_name = f"rule_{rule_start}"
+                        pos += len(word) - 1
+            pos += 1
+        return {'rules': rules, 'imports': imports}
+
+    def _count_preceding_backslashes(self, text, pos):
+        num = 0
+        j = pos - 1
+        while j >= 0 and text[j] == '\\':
+            num += 1
+            j -= 1
+        return num
+
+    def _fine_grained_mask(self, text):
+        """Replaces characters with spaces but PRESERVES newlines to keep line numbers in sync."""
+        return re.sub(r'[^\n]', ' ', text)
+
+    def beautify_yara_rule(self, name, full_text):
+        """Formats a YARA rule for professional extraction."""
+        brace_pos = full_text.find('{')
+        if brace_pos == -1: return full_text
+        
+        header = full_text[:brace_pos].strip()
+        body_with_end = full_text[brace_pos+1:]
+        
+        last_brace = body_with_end.rfind('}')
+        if last_brace == -1: return full_text
+        
+        body = body_with_end[:last_brace].strip()
+        
+        # Normalize Header
+        if name:
+            # Match modifier + 'rule' + name_part from original header
+            m_mod = re.match(r'^((?:(?:global|private)\s+)?rule\s+)', header, re.IGNORECASE)
+            if m_mod:
+                header = m_mod.group(1) + name
+            else:
+                header = f"rule {name}"
+        else:
+            header = "rule unknown"
+            
+        # Indent Body (tabbed)
+        lines = body.splitlines()
+        new_body = []
+        for l in lines:
+            l = l.strip()
+            if l: new_body.append("\t" + l)
+            else: new_body.append("")
+            
+        return f"{header} {{\n" + "\n".join(new_body) + "\n}"
+
+    def _get_line_map(self, text):
+        """Builds a fast lookup map for character offsets to line numbers."""
+        line_offsets = [0]
+        curr = 0
+        while True:
+            idx = text.find('\n', curr)
+            if idx == -1: break
+            line_offsets.append(idx + 1)
+            curr = idx + 1
+        return line_offsets
+
+    def _sync_yara_rule_name(self, m):
+        """Regex callback to synchronize and sanitize rule names while preserving byte length."""
+        h = m.group(0)
+        # Surgical Match: Captured identifier part separately from tags (anything after whitespace or :)
+        # Identifier is [\w\.]+ starting after 'rule '
+        m_part = re.search(r'((?:global|private)\s+)?rule\s+([\w\.]+)([^\{]*)', h, re.IGNORECASE)
+        if m_part:
+            prefix, name, rest = m_part.group(1) or "", m_part.group(2), m_part.group(3)
+            
+            # 1. Sanitize only the name part if it's invalid
+            fixed_name = name
+            if fixed_name and fixed_name[0].isdigit():
+                # Replace first char to keep length same for line mapping
+                fixed_name = "_" + fixed_name[1:]
+            
+            # 2. Reconstruct. If name didn't change, we RETURN h to avoid any mangling
+            if fixed_name == name: return h
+            
+            # Reconstruct part for h.replace
+            # We must be careful to replace EXACTLY what we matched
+            old_str = f"{prefix}rule {name}"
+            new_str = f"{prefix}rule {fixed_name}"
+            return h.replace(old_str, new_str)
+        return h
+
+    def validate_master_gui(self, master_path):
+        """Validates YARA rules in a directory, identifying syntax vs environmental errors."""
+        self.after(0, lambda: self.log_col(f"Auditing {master_path.name} (Differential Pass)...", "info"))
+        if not master_path.exists(): return
+        
+        if getattr(sys, 'frozen', False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).parent.parent
+            
+        try:
+            # Handle BOM and rogue bytes gracefully
+            # Replace null characters with spaces to prevent YARA "embedded null character" errors
+            content = master_path.read_text(encoding='utf-8-sig', errors='surrogateescape').replace('\x00', ' ')
+        except Exception as e:
+            self.after(0, lambda: self.log_col(f"CRITICAL: {master_path.name} read error: {str(e)}", "error"))
+            return
+
+        # Pre-process name sync to avoid name errors in validation engine
+        content = re.sub(r'(?m)^\s*(?:(?:global|private)\s+)?rule\s+[^{]+', self._sync_yara_rule_name, content)
+        
+        parse_results = self.surgical_yara_parse(content)
+        rules = parse_results.get('rules', [])
+        line_lookup_map = self._get_line_map(content)
+        
+        available_mods = set(yara.modules) if hasattr(yara, 'modules') else set()
+        test_mods = ["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console", "archive", "cuckoo", "string", "vt", "lnk", "androguard"]
+        # Force mandatory imports into detection to stabilize validation
+        mandatory_set = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
+        
+        temp_content = content 
+        bad_rules = []
+        seen_names = set()
+        
+        # --- PHASE 1: DEDUP (STRICT FIRST PASS) ---
+        duplicates_found = 0
+        mutable_temp = list(temp_content)
+        dup_names_found = []
+
+        for r in rules:
+            rname = r['name']
+            if rname in seen_names:
+                r['is_dup'] = True
+                r['error'] = "Pre-Audit Duplicate Name Collision"
+                bad_rules.append(r)
+                dup_names_found.append(rname)
+                
+                # OPTIMIZED MASKING: Use character list to avoid O(N^2) string rebuilding
+                start, end = int(r['start']), int(r['end'])
+                for i in range(start, min(end, len(mutable_temp))):
+                    if mutable_temp[i] != '\n':
+                        mutable_temp[i] = ' '
+                duplicates_found += 1
+            else:
+                seen_names.add(rname)
+        
+        if duplicates_found > 0:
+            temp_content = "".join(mutable_temp)
+            # Log summary if many, otherwise individuals
+            if duplicates_found < 15:
+                for dn in dup_names_found:
+                    self.after(0, lambda n=dn: self.log_col(f"Deduped rule: {n}", "info"))
+            else:
+                self.after(0, lambda n=duplicates_found: self.log_col(f"PHASE 1: Mass-deduplicated {n} rules.", "info"))
+            
+            self.after(0, lambda n=duplicates_found: self.log_col(f"PHASE 1 COMPLETE: Isolated {n} duplicates. Starting Phase 2...", "info"))
+
+        bad_rule_names = set(br['name'] for br in bad_rules)
+        stubs: str = ""
+        current_std_imps: str = ""
+        syntax_errs: int = 0
+        env_errs: int = 0
+        
+        # FAST-FIRST: Try to compile the deduplicated content
+        try:
+            yara.compile(source=temp_content)
+            self.after(0, lambda n=master_path.name: self.log_col(f"FAST PASS OK: {n} is valid.", "success"))
+        except:
+            pass # Proceed to iterative audit if still broken
+
+        max_passes = 1500 
+        for p in range(max_passes):
             if self.abort_collection: break
             try:
-                yara.compile(str(master_path))
-                self.after(0, lambda: self.log_col("Master cleanup complete. All rules are valid.", "success"))
+                # Use current_std_imps and stubs for iterative recovery
+                yara.compile(source=f"{stubs}{current_std_imps}{temp_content}")
                 break
-            except yara.SyntaxError as e:
-                match = re.search(r'\((\d+)\):', str(e))
-                if not match: break
-                line_no = int(match.group(1))
-                text_lines = master_path.read_text(encoding='utf-8', errors='ignore').splitlines(True)
+            except Exception as e:
+                err_msg = str(e)
+                err_msg_lower = err_msg.lower()
                 
-                # Relaxed rule header pattern — handle comments and varied spacing
-                # Removed strict $ anchor to prevent matching previous valid rules
-                rule_header_re = re.compile(r'^\s*(?:(?:global|private)\s+)?rule\s+[\w\.]+(?:\s*:\s*[\w\s\.]+)?\s*\{?', re.MULTILINE)
-                start = next(
-                    (i for i in range(min(line_no - 1, len(text_lines) - 1), -1, -1)
-                     if rule_header_re.search(text_lines[i])),
-                    -1
-                )
-                if start == -1: break
-                full_text_from_start = "".join(text_lines[start:])
-                rel_last_idx = self.find_balanced_closing_brace(full_text_from_start)
+                # Check for module errors - ONLY inject if YARA supports it
+                m_imp = re.search(r'identifier "(.*?)"', err_msg_lower) or re.search(r'module "(.*?)"', err_msg_lower)
+                if m_imp:
+                    mod_name = m_imp.group(1).strip()
+                    if mod_name in test_mods and mod_name in available_mods:
+                        if f'import "{mod_name}"' not in current_std_imps:
+                            current_std_imps += f'import "{mod_name}"\n'
+                            env_errs += 1
+                            self.after(0, lambda m=mod_name: self.log_col(f"Missing Module: {m}", "warn"))
+                            continue
                 
-                if rel_last_idx != -1:
-                    # Map relative index back to line index
-                    acc_len = 0
-                    end = start
-                    for i in range(start, len(text_lines)):
-                        acc_len += len(text_lines[i])
-                        if acc_len > rel_last_idx:
-                            end = i
-                            break
-                else:
-                    end = len(text_lines) - 1
-                
-                bad_block = "".join(text_lines[start:end+1])
-                rname_m = re.search(r'rule\s+([\w\.]+)', bad_block)
-                rname = rname_m.group(1) if rname_m else f"err_{line_no}"
-                
-                if rname == last_error_rule:
-                    rep_count += 1
-                    if rep_count >= 2:
-                        self.after(0, lambda r=rname: self.log_col(f"CRITICAL: Endless loop on rule '{r}'. MANUAL FIX REQUIRED.", "error"))
-                        break
-                else:
-                    last_error_rule = rname
-                    rep_count = 0
-
-                if any(x in bad_block.lower() for x in ["cuckoo.", "cuckko.", 'import "cuckoo"', 'import "cuckko"']):
-                    master_path.write_text("".join(text_lines[:start] + text_lines[end+1:]), encoding='utf-8')
-                    self.after(0, lambda r=rname: self.log_col(f"Discarded incompatible rule: {r}", "info"))
-                    continue
-
-                err_msg = str(e).lower()
-                is_env = "undefined identifier" in err_msg
-                target_dir = env_specific_dir if is_env else quarantine_dir
-                
-                if not target_dir.exists(): target_dir.mkdir(parents=True, exist_ok=True)
-                
-                suffix = "_env.yar" if is_env else ".yar"
-                (target_dir / f"{rname}{suffix}").write_text(bad_block, encoding='utf-8')
-                master_path.write_text("".join(text_lines[:start] + text_lines[end+1:]), encoding='utf-8')
-                
-                # Update Status Logs based on category
-                if is_env:
-                    self.after(0, lambda r=rname: self.log_col(f"Env-Specific: {r} (Dependency Missing) -> Moving to support repo", "info"))
-                else:
-                    self.after(0, lambda r=rname: self.log_col(f"Problematic Rule: {r} (Syntax Error)", "warn"))
+                # Match line numbers
+                match = re.search(r'\((\d+)\)', err_msg) or re.search(r'line (\d+)', err_msg) or re.search(r'line (\d+)', err_msg_lower)
+                if match:
+                    s_str = str(stubs)
+                    i_str = str(current_std_imps)
+                    header_lines = s_str.count('\n') + i_str.count('\n')
+                    err_line = int(match.group(1)) - header_lines
+                    target_offset = line_lookup_map[err_line-1] if 0 < err_line <= len(line_lookup_map) else -1
                     
-                # Track problematic rules in external list (only for true errors)
-                if not is_env:
-                    base_dir = Path(__file__).parent.parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent
-                    prob_file = base_dir / "problematic_rules.txt"
-                    current_prob = set()
-                    if prob_file.exists():
-                        current_prob = set(line.strip() for line in prob_file.read_text().splitlines() if line.strip())
-                    if rname not in current_prob:
-                        with open(prob_file, "a", encoding="utf-8") as pf: pf.write(f"{rname}\n")
-        
-        # Final verification that Master is now clean
-        try:
-            yara.compile(str(master_path))
-            self.after(0, lambda: self.log_col("SUCCESS: Master Rulebase is now 100% Valid.", "success"))
-        except Exception as e:
-            self.after(0, lambda: self.log_col(f"Cleanup finished, but Master still has remaining issues. Run again or check logs.", "info"))
+                    found_rule = None
+                    if target_offset != -1:
+                        for r in rules:
+                            if r['start'] <= target_offset < r['end']:
+                                found_rule = r
+                                break
+                    
+                    if found_rule:
+                        rname = found_rule['name']
+                        # Loop Guard: Prevent redundant logging and infinite spins on the same rule
+                        if rname in bad_rule_names:
+                            mask = self._fine_grained_mask(temp_content[int(found_rule['start']):int(found_rule['end'])])
+                            temp_content = temp_content[:int(found_rule['start'])] + mask + temp_content[int(found_rule['end']):]
+                            continue
 
-    def process_quarantine_fixes_gui(self, q_dir, f_dir):
-        available_mods = set(yara.modules)
-        active_imps = '\n'.join([f'import "{m}"' for m in ["pe","math","hash","dotnet","magic","time","elf","macho","dex","console"] if m in available_mods])
+                        bad_rule_names.add(rname)
+                        is_env = any(x in err_msg_lower for x in ["undefined identifier", "undefined module", "undefined string", "not found", "unknown module", "unknown identifier", "external variable"])
+                        is_dup = "duplicated" in err_msg_lower
+                        
+                        # Refinement: If identifier is defined in the SAME rule, it's a syntax error, not a dependency issue
+                        if is_env:
+                            m_id = re.search(r'identifier "(.*?)"', err_msg_lower)
+                            if m_id and f"${m_id.group(1).strip()}" in found_rule.get('full_text', ''):
+                                is_env = False
+
+                        if is_env: env_errs += 1
+                        else: syntax_errs += 1
+                        try:
+                            log_file = base_dir / "source_error_log.txt"
+                            with open(log_file, "a", encoding="utf-8") as lf:
+                                lf.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] File: {master_path.name} | Rule: {rname} | Error: {err_msg[:80]}\n")
+                        except: pass
+
+                        if is_env: self.after(0, lambda n=rname: self.log_col(f"Dependency Found: {n}", "info"))
+                        elif is_dup: self.after(0, lambda n=rname: self.log_col(f"Duplicate: {n}", "warn"))
+                        else: self.after(0, lambda n=rname: self.log_col(f"Syntax Error: {n}", "warn"))
+                        
+                        mask = self._fine_grained_mask(temp_content[int(found_rule['start']):int(found_rule['end'])])
+                        temp_content = temp_content[:int(found_rule['start'])] + mask + temp_content[int(found_rule['end']):]
+                    else:
+                        # Greedy Recovery Fallback
+                        snipped = False
+                        target_idx = int(target_offset)
+                        if target_idx != -1:
+                            rule_header_re = re.compile(r'(?m)^\s*(?:(?:global|private)\s+)?rule\s+([^{]+)', re.MULTILINE)
+                            matches = list(rule_header_re.finditer(temp_content, 0, target_idx))
+                            if matches:
+                                m = matches[-1]
+                                prev_rule_idx = int(m.start())
+                                # Standardize for guard
+                                rname = "".join([c if (c.isalnum() or c in '_.') else '_' for c in m.group(1).strip()])
+                                
+                                if rname in bad_rule_names:
+                                    next_brace_idx = temp_content.find('}', target_idx)
+                                    if next_brace_idx != -1:
+                                        mask = self._fine_grained_mask(temp_content[prev_rule_idx : next_brace_idx + 1])
+                                        temp_content = temp_content[:prev_rule_idx] + mask + temp_content[next_brace_idx+1:]
+                                    continue # Skip redundant log
+                                    
+                                bad_rule_names.add(rname)
+                                next_brace_idx = temp_content.find('}', target_idx)
+                                if next_brace_idx != -1:
+                                    mask = self._fine_grained_mask(temp_content[prev_rule_idx : next_brace_idx + 1])
+                                    temp_content = temp_content[:prev_rule_idx] + mask + temp_content[next_brace_idx + 1:]
+                                    syntax_errs += 1
+                                    self.after(0, lambda n=rname: self.log_col(f"Found hidden error in: {n}", "warn"))
+                                    snipped = True
+                        
+                        if not snipped:
+                            self.after(0, lambda m=err_msg: self.log_col(f"Unresolved Error (Masked Line): {m}", "error"))
+                            syntax_errs += 1
+                            line_start = max(0, int(target_offset))
+                            line_end = temp_content.find('\n', line_start)
+                            if line_end == -1: line_end = len(temp_content)
+                            temp_content = temp_content[:line_start] + self._fine_grained_mask(temp_content[line_start:line_end]) + temp_content[line_end:]
+                else: 
+                    self.after(0, lambda m=err_msg: self.log_col(f"File-wide Error: {m}", "error"))
+                    syntax_errs += 1
+                    break
+        
+        v_count = len(rules) - len(bad_rule_names)
+        # Consistent reporting: Total bad rules = len(bad_rule_names)
+        self.after(0, lambda v=v_count, s=syntax_errs, e=env_errs: 
+                     self.log_col(f"REPORT [{master_path.name}]: {v} Valid | {s} Syntax Errs | {e} Dependency Issues.", 
+                                  "success" if (s+e)==0 else "warn"))
+
+    def extract_problematic_rules_gui(self, master_path, quarantine_dir, env_specific_dir):
+        """High-speed differential extraction and structure normalization."""
+        self.after(0, lambda: self.log_col(f"Normalizing and Cleaning {master_path.name}...", "info"))
+        if not master_path.exists(): return
+        
+        base_dir = Path(__file__).parent.parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent
+        
+        try:
+            # Replace null characters with spaces to prevent YARA "embedded null character" errors
+            content = master_path.read_text(encoding='utf-8-sig', errors='surrogateescape').replace('\x00', ' ')
+        except Exception as e:
+            self.after(0, lambda: self.log_col(f"CRITICAL: {master_path.name} read error: {str(e)}", "error"))
+            return
+            
+        # 1. NORMALIZE HEADERS FIRST (Ensures all subsequent offsets are aligned)
+        content = re.sub(r'(?m)^\s*(?:(?:global|private)\s+)?rule\s+[^{]+', self._sync_yara_rule_name, content)
+
+        # 2. PARSE NORMALIZED CONTENT
+        parse_results = self.surgical_yara_parse(content)
+        rules: list = cast(list, parse_results['rules'])
+        all_imports: set = cast(set, parse_results['imports'])
+        line_lookup_map = self._get_line_map(content)
+        
+        # Dynamic module check for local environment
+        try:
+            available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+        except:
+            available_mods = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+            
+        test_mods: list = ["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console", "archive", "cuckoo", "string", "vt", "lnk", "androguard"]
+        
+        # 2.5. Mandatory Import Injection (Requested by User)
+        mandatory_mods = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
+        all_imports.update(mandatory_mods)
+        
+        temp_content: str = content # Already normalized
+        bad_rules: list = []
+        seen_names = set()
+        
+        # --- PHASE 1: DEDUP (STRICT FIRST PASS) ---
+        duplicates_found = 0
+        mutable_temp = list(temp_content)
+        dup_names_found = []
+
+        for r in rules:
+            rname = r['name']
+            if rname in seen_names:
+                r['is_dup'] = True
+                r['error'] = "Pre-Audit Duplicate Name Collision"
+                bad_rules.append(r)
+                dup_names_found.append(rname)
+                
+                # OPTIMIZED MASKING
+                start, end = int(r['start']), int(r['end'])
+                for i in range(start, min(end, len(mutable_temp))):
+                    if mutable_temp[i] != '\n':
+                        mutable_temp[i] = ' '
+                duplicates_found += 1
+            else:
+                seen_names.add(rname)
+        
+        if duplicates_found > 0:
+            temp_content = "".join(mutable_temp)
+            if duplicates_found < 15:
+                for dn in dup_names_found:
+                    self.after(0, lambda n=dn: self.log_col(f"Deduped rule: {n}", "info"))
+            else:
+                self.after(0, lambda n=duplicates_found: self.log_col(f"PHASE 1: Mass-deduplicated {n} rules.", "info"))
+                
+            self.after(0, lambda n=duplicates_found: self.log_col(f"PHASE 1 COMPLETE: Isolated {n} duplicates. Starting Phase 2...", "info"))
+            # Optional: Log to file
+            try:
+                log_file = base_dir / "duplicate_rules_log.txt"
+                with open(log_file, "a", encoding="utf-8") as lf:
+                    for br in [r for r in bad_rules if r.get('is_dup')]:
+                        lf.write(f"{br['name']}\n")
+            except: pass
+
+        syntax_errs: int = int(0)
+        env_errs: int = int(0)
+        stubs: str = ""
+        current_std_imps: str = ""
+        
+        # FAST-FIRST: Try to compile the deduplicated content
+        try:
+            yara.compile(source=temp_content)
+            self.after(0, lambda n=master_path.name: self.log_col(f"FAST PASS OK: {n} is valid. Normalizing structure...", "success"))
+            # Skip recovery loop if file is zero-error
+            valid_rules = rules
+            bad_rules = []
+            max_passes = 0
+            # Proceed to final write for normalization (beautification)
+        except:
+            max_passes = 1500
+
+        for p in range(max_passes):
+            if self.abort_collection: break
+            try:
+                yara.compile(source=f"{stubs}{current_std_imps}{temp_content}")
+                break
+            except Exception as e:
+                err_msg = str(e)
+                err_msg_lower = err_msg.lower()
+                
+                # Check for module errors - ONLY inject if supported
+                m_imp = re.search(r'identifier "(.*?)"', err_msg_lower) or re.search(r'module "(.*?)"', err_msg_lower)
+                if m_imp:
+                    mod_name = m_imp.group(1).strip()
+                    if mod_name in test_mods:
+                        if mod_name in available_mods:
+                            if f'import "{mod_name}"' not in current_std_imps:
+                                current_std_imps += f'import "{mod_name}"\n'
+                                self.after(0, lambda m=mod_name: self.log_col(f"Injecting dependency: {m}", "info"))
+                                continue # Continue to next pass to re-compile with new import
+                            else:
+                                # Already imported but still erroring? Environment issue.
+                                self.after(0, lambda m=mod_name: self.log_col(f"Dependency Issue with: {m}", "warn"))
+                                if any(x in err_msg_lower for x in ["unknown module", "undefined module", "unknown identifier", "undefined identifier"]):
+                                    env_errs += 1
+                        else:
+                            # Unsupported module! Strip from all_imports...
+                            if mod_name in all_imports:
+                                all_imports.remove(mod_name)
+                            self.after(0, lambda m=mod_name: self.log_col(f"Stripping unsupported module: {m}", "warn"))
+                            # ...and MUST continue to line matching to mask the rule using it
+                            env_errs += 1
+
+                match = re.search(r'\((\d+)\)', err_msg) or re.search(r'line (\d+)', err_msg) or re.search(r'line (\d+)', err_msg_lower)
+                if match:
+                    s_str = str(stubs)
+                    i_str = str(current_std_imps)
+                    header_lines = s_str.count('\n') + i_str.count('\n')
+                    err_line = int(match.group(1)) - header_lines
+                    target_offset = line_lookup_map[err_line-1] if 0 < err_line <= len(line_lookup_map) else -1
+                    
+                    found_rule = None
+                    if target_offset != -1:
+                        for r in rules:
+                            if r['start'] <= target_offset < r['end']:
+                                found_rule = r
+                                break
+                    
+                    if found_rule:
+                        # Prevent infinite loops
+                        rname = found_rule['name']
+                        if any(br['name'] == rname for br in bad_rules):
+                            mask = self._fine_grained_mask(temp_content[int(found_rule['start']):int(found_rule['end'])])
+                            temp_content = temp_content[:int(found_rule['start'])] + mask + temp_content[int(found_rule['end']):]
+                            continue
+                            
+                        is_env = any(x in err_msg_lower for x in ["undefined identifier", "undefined module", "undefined string", "not found", "unknown module", "unknown identifier", "external variable"])
+                        is_dup = "duplicated" in err_msg_lower
+                        
+                        # Refinement: If identifier is defined in the SAME rule, it's a syntax error, not a dependency issue
+                        if is_env:
+                            m_id = re.search(r'identifier "(.*?)"', err_msg_lower)
+                            if m_id and f"${m_id.group(1).strip()}" in found_rule.get('full_text', ''):
+                                is_env = False
+
+                        found_rule['is_env'] = is_env
+                        found_rule['is_dup'] = is_dup
+                        found_rule['error'] = err_msg
+                        bad_rules.append(found_rule)
+                        
+                        mask = self._fine_grained_mask(temp_content[int(found_rule['start']):int(found_rule['end'])])
+                        temp_content = temp_content[:int(found_rule['start'])] + mask + temp_content[int(found_rule['end']):]
+                        
+                        short_err = err_msg[:60] + "..." if len(err_msg) > 60 else err_msg
+                        if is_dup: self.after(0, lambda n=rname, e=short_err: self.log_col(f"Duplicate Encountered: {n} ({e})", "info"))
+                        elif is_env: self.after(0, lambda n=rname, e=short_err: self.log_col(f"Quarantining Dependency-Issue: {n} ({e})", "info"))
+                        else: self.after(0, lambda n=rname, e=short_err: self.log_col(f"Quarantining Broken-Rule: {n} ({e})", "warn"))
+                    else:
+                        # Greedy Recovery Fallback
+                        snipped = False
+                        target_idx = int(target_offset)
+                        if target_idx != -1:
+                            rule_header_re = re.compile(r'(?m)^\s*(?:(?:global|private)\s+)?rule\s+([^{]+)', re.MULTILINE)
+                            matches = list(rule_header_re.finditer(temp_content, 0, target_idx))
+                            if matches:
+                                m = matches[-1]
+                                prev_rule_idx = m.start()
+                                rname = "".join([c if (c.isalnum() or c in '_.') else '_' for c in m.group(1).strip()])
+                                
+                                # Guard greedy
+                                if any(br['name'] == rname for br in bad_rules):
+                                    next_brace_idx = temp_content.find('}', target_idx)
+                                    if next_brace_idx != -1:
+                                        mask = self._fine_grained_mask(temp_content[prev_rule_idx : next_brace_idx + 1])
+                                        temp_content = temp_content[:prev_rule_idx] + mask + temp_content[next_brace_idx + 1:]
+                                    continue
+                                    
+                                next_brace_idx = temp_content.find('}', target_idx)
+                                if next_brace_idx != -1:
+                                    greedy_text = temp_content[prev_rule_idx : next_brace_idx + 1]
+                                    # Use the sanitized name from the match if possible, or a fallback
+                                    safe_rname = "".join([c if (c.isalnum() or c == '_') else '_' for c in m.group(1).strip()])
+                                    if safe_rname and safe_rname[0].isdigit(): safe_rname = "r_" + safe_rname
+                                    f_rule = {'name': safe_rname or f"greedy_{prev_rule_idx}", 'full_text': greedy_text, 'start': int(prev_rule_idx), 'end': int(next_brace_idx+1)}
+                                    bad_rules.append(f_rule)
+                                    mask = self._fine_grained_mask(greedy_text)
+                                    temp_content = temp_content[:prev_rule_idx] + mask + temp_content[next_brace_idx + 1:]
+                                    self.after(0, lambda n=rname: self.log_col(f"Greedy Extract: {n}", "warn"))
+                                    snipped = True
+                        
+                        if not snipped:
+                            # Last resort: mask just the offending line
+                            self.after(0, lambda m=err_msg: self.log_col(f"Unresolved Error (Masked Line): {m}", "error"))
+                            syntax_errs += 1
+                            line_start = max(0, int(target_idx))
+                            line_end = temp_content.find('\n', line_start)
+                            if line_end == -1: line_end = len(temp_content)
+                            
+                            # Strip import if this was an import line
+                            line_content = temp_content[line_start:line_end].strip()
+                            if line_content.startswith('import "'):
+                                m_fault = re.search(r'import "(.*?)"', line_content)
+                                if m_fault:
+                                    f_mod = m_fault.group(1).strip()
+                                    if f_mod in all_imports:
+                                        all_imports.remove(f_mod)
+                                        self.after(0, lambda m=f_mod: self.log_col(f"Removed faulty import: {m}", "warn"))
+                            
+                            mask = self._fine_grained_mask(temp_content[line_start:line_end])
+                            temp_content = temp_content[:line_start] + mask + temp_content[line_end:]
+                            syntax_errs += 1
+                else:
+                    self.after(0, lambda m=err_msg: self.log_col(f"Critical File-wide Error: {m}", "error"))
+                    break
+        bad_rule_starts = {r['start'] for r in bad_rules}
+        valid_rules = [r for r in rules if r['start'] not in bad_rule_starts]
+        valid_texts = [self.beautify_yara_rule(r['name'], r['full_text']) for r in valid_rules]
+        
+        # Merge and Filter imports by availability
+        s_imps = str(current_std_imps)
+        disco_imps = set(re.findall(r'import "(.*?)"', s_imps))
+        # Use set pipe for union to avoid Pyre confusion
+        final_set = set(all_imports) | disco_imps
+        final_imps = sorted([i for i in final_set if i in available_mods])
+        header = '\n'.join([f'import "{i}"' for i in final_imps]) + "\n\n"
+        # Rewrite the master file with only the valid rules (this effectively removes the problematic ones)
+        if not valid_texts:
+            try: master_path.unlink()
+            except: pass
+            self.after(0, lambda n=master_path.name: self.log_col(f"CLEANUP: {n} removed (all rules extracted).", "info"))
+        else:
+            master_path.write_text(header + "\n\n".join(valid_texts), encoding='utf-8')
+        
+        if bad_rules:
+            for br in bad_rules:
+                if br.get('is_dup'): continue # Just remove from master, no folder extraction
+                
+                target_dir = env_specific_dir if br.get('is_env') else quarantine_dir
+                ext = "_env.yar" if br.get('is_env') else ".yar"
+                
+                target_dir.mkdir(parents=True, exist_ok=True)
+                pretty = self.beautify_yara_rule(br['name'], br['full_text'])
+                (target_dir / f"{br['name']}{ext}").write_text(pretty, encoding='utf-8')
+            
+            p_rules = [r for r in bad_rules if not r.get('is_dup')]
+            if p_rules:
+                self.after(0, lambda n=len(p_rules): self.log_col(f"FINISH: Extracted {n} problematic rules.", "success"))
+            if duplicates_found > 0:
+                self.after(0, lambda n=duplicates_found: self.log_col(f"CLEANUP: Removed {n} duplicates from target.", "success"))
+        else:
+            self.after(0, lambda: self.log_col(f"CLEANED: {master_path.name} is now valid and normalized.", "success"))
+
+
+
+    def process_quarantine_fixes_gui(self, q_dir):
+        try:
+            available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+        except:
+            available_mods = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+            
+        # User requested standard set
+        requested_std = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
+        active_imps = '\n'.join([f'import "{m}"' for m in requested_std if m in available_mods])
         files = list(q_dir.glob("*.yar*"))
         success_count = 0 
         # Load problematic list for removal tracking
         base_dir = Path(__file__).parent.parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent
-        prob_file = base_dir / "problematic_rules.txt"
+        prob_file = q_dir / "problematic_rules.txt"
 
  
         for i, f_path in enumerate(files):
@@ -2327,14 +3314,20 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, lambda n=rname: self.log_col(f"Checking {n} for existing validity...", "info"))
             
             try:
-                c_orig = f_path.read_text(encoding='utf-8', errors='ignore')
+                # Sanitize input here too
+                c_orig = f_path.read_text(encoding='utf-8', errors='ignore').replace('\x00', ' ')
                 
                 # Pre-validation: If it's already valid, promote immediately
                 try:
                     yara.compile(source=f"{active_imps}\n{c_orig}")
-                    with open(OUTPUT_FILE, "a", encoding="utf-8") as mf:
-                        mf.write(f"\n\n// --- Validated & Moved: {f_path.name} ---\n")
-                        mf.write(c_orig + "\n")
+                    if self.master_rules:
+                        m_path = Path(str(self.master_rules))
+                        if m_path.is_dir():
+                            m_path = m_path / "public_master_rules.yara"
+                            
+                        with open(m_path, "a", encoding="utf-8") as mf:
+                            mf.write(f"\n\n// --- Validated & Moved: {f_path.name} ---\n")
+                            mf.write(c_orig + "\n")
                     f_path.unlink()
                     success_count += 1
                     self.after(0, lambda n=rname: self.log_col(f"✅ Already valid: {n} promoted to master.", "success"))
@@ -2415,9 +3408,11 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 
                 # SUCCESS: Write to master
                 success_count += 1
-                with open(OUTPUT_FILE, "a", encoding="utf-8") as mf:
-                    mf.write(f"\n\n// --- Moved Fixed Rule: {f_path.name} ---\n")
-                    mf.write(c + "\n")
+                if self.master_rules:
+                    m_path = Path(self.master_rules)
+                    with open(m_path, "a", encoding="utf-8") as mf:
+                        mf.write(f"\n\n// --- Moved Fixed Rule: {f_path.name} ---\n")
+                        mf.write(c + "\n")
                 
                 # Clean up manifest
                 if prob_file.exists():
@@ -2435,14 +3430,16 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, lambda i=i, t=len(files): self.col_progress.set((i+1)/t))
 
         # 3. Final Verification Sweep: Promote anything valid remaining in folders
-        for folder in [q_dir, f_dir]:
+        for folder in [q_dir]:
             for rem_path in folder.glob("*.yar*"):
                 try:
-                    c_rem = rem_path.read_text(encoding='utf-8', errors='ignore')
+                    c_rem = rem_path.read_text(encoding='utf-8', errors='ignore').replace('\x00', ' ')
                     yara.compile(source=f"{active_imps}\n{c_rem}")
-                    with open(OUTPUT_FILE, "a", encoding="utf-8") as mf:
-                        mf.write(f"\n\n// --- Sweep Fixed Rule: {rem_path.name} ---\n")
-                        mf.write(c_rem + "\n")
+                    if self.master_rules and Path(self.master_rules).exists():
+                        m_path = Path(self.master_rules)
+                        with open(m_path, "a", encoding="utf-8") as mf:
+                            mf.write(f"\n\n// --- Sweep Fixed Rule: {rem_path.name} ---\n")
+                            mf.write(c_rem + "\n")
                     rem_path.unlink()
                     success_count += 1
                     self.after(0, lambda n=rem_path.name: self.log_col(f"Sweep Promo: {n} is valid.", "success"))
@@ -2451,63 +3448,66 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self.after(0, lambda s=success_count: self.log_col(f"Task complete. {s} rules moved to master.", "success"))
 
-    def deduplicate_directory_rules(self, folder_path):
-        self.after(0, lambda: self.log_col(f"Analyzing {folder_path.name} for identifier collisions...", "info"))
-        seen_rules = {} # rule_name -> first_file_found
-        files = sorted(list(folder_path.rglob("*.yar*")))
+
+    def remove_blacklisted_rules_from_directory(self, folder_path, blacklist):
+        self.after(0, lambda: self.log_col(f"Analyzing {folder_path.name} for blacklisted rules...", "info"))
         total_removed = 0
+        yara_exts = [".yar", ".yara", ".rule", ".rules"]
+        # Fast exclude hidden folders like .git
+        files = sorted([f for f in folder_path.rglob("*") 
+                       if f.is_file() and f.suffix.lower() in yara_exts and not any(part.startswith('.') for part in f.parts)])
+        total_files = len(files)
 
-        for f_path in files:
+        for f_idx, f_path in enumerate(files):
+            if f_idx % 5 == 0:
+                self.after(0, lambda i=f_idx, t=total_files: self.col_progress.set(i/total_files if total_files else 1))
             if self.abort_collection: break
+            
             try:
-                content = f_path.read_text(encoding='utf-8', errors='ignore')
-                # STRICT REGEX: Must be at start of line, followed by name, optional tags, and an opening brace
-                # This prevents matching "rule" inside natural language comments.
-                matches = list(re.finditer(r'(?m)^\s*(?:(?:global|private)\s+)?rule\s+([\w\.]+)(?:\s*:\s*[\w\s\.]+)?\s*\{', content))
+                # Sanitize null characters to prevent 'embedded null character' errors
+                content = f_path.read_text(encoding='utf-8-sig', errors='ignore').replace('\x00', ' ')
+                if 'rule' not in content.lower(): continue
                 
-                if not matches: continue
+                parse_results = self.surgical_yara_parse(content)
+                file_rules = parse_results['rules']
+                if not file_rules: continue
                 
-                rule_pos = [(m.start(), m.group(1)) for m in matches]
-                pre_content = content[:rule_pos[0][0]]
-                kept_blocks = [pre_content]
+                kept_rules = []
                 removed_in_file = 0
-                
-                for i in range(len(rule_pos)):
-                    start, rname = rule_pos[i]
-                    end_search = rule_pos[i+1][0] if i+1 < len(rule_pos) else len(content)
-                    block_full = content[start:end_search]
-                    
-                    # Deep brace balancing to extract the rule block precisely
-                    last_idx = self.find_balanced_closing_brace(block_full)
-                    
-                    if last_idx != -1:
-                        rule_block = block_full[:last_idx+1]
-                        trailing_after_rule = block_full[last_idx+1:]
-                        
-                        if rname in seen_rules:
-                            removed_in_file += 1
-                            total_removed += 1
-                            # Discard the rule_block but keep the trailing spacing/comments
-                            kept_blocks.append(trailing_after_rule)
-                        else:
-                            seen_rules[rname] = f_path.name
-                            kept_blocks.append(block_full) # Keep as is
+                for r in file_rules:
+                    if self.abort_collection: break
+                    rname, rtext = r['name'], r['full_text']
+                    if rname in blacklist:
+                        removed_in_file += 1
+                        total_removed += 1
+                        self.after(0, lambda n=rname, f=f_path.name: self.log_col(f"[-] Blacklisted rule removed: '{n}' from {f}", "warn"))
                     else:
-                        # Fallback for malformed rules
-                        kept_blocks.append(block_full)
-
+                        kept_rules.append(rtext)
+                
                 if removed_in_file > 0:
-                    new_content = "".join(kept_blocks)
-                    # Simple cleanup of excessive newlines (max 3 in a row)
-                    new_content = re.sub(r'\n{4,}', '\n\n\n', new_content)
-                    f_path.write_text(new_content, encoding='utf-8')
-                    self.after(0, lambda f=f_path.name, n=removed_in_file: 
-                                self.log_col(f"Cleaned up {f}: Removed {n} duplicate rules.", "success"))
+                    if not kept_rules:
+                        f_path.unlink()
+                        self.after(0, lambda f=f_path.name: self.log_col(f"Deleted empty file after removal: {f}", "success"))
+                    else:
+                        # Re-inject imports and normalize
+                        try:
+                            available = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+                        except:
+                            available = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+                            
+                        disco_set = set(parse_results.get('imports', []))
+                        std_set = set(self.standard_yara_imports)
+                        all_needed_imps = std_set | disco_set
+                        # Filter by availability
+                        f_imps = sorted([i for i in all_needed_imps if i in available])
+                        header = "\n".join([f'import "{i}"' for i in f_imps]) + "\n\n"
+                        f_path.write_text(header + "\n\n".join(kept_rules) + "\n", encoding='utf-8')
+                        self.after(0, lambda f=f_path.name, n=removed_in_file: 
+                                     self.log_col(f"Cleaned {f}: Removed {n} blacklisted rules.", "success"))
             except Exception as e:
-                self.after(0, lambda f=f_path.name, err=str(e): self.log_col(f"Error checking {f}: {err}", "error"))
+                self.after(0, lambda f=f_path.name, err=str(e): self.log_col(f"Error processing {f}: {err}", "warn"))
 
-        self.after(0, lambda n=total_removed: 
-                    self.log_col(f"Deduplication Complete. Total identifiers resolved: {n}", "success"))
+        self.after(0, lambda n=total_removed: self.log_col(f"Blacklist Removal Complete. Total rules removed: {n}", "success"))
 
     def handle_editor_drop(self, event):
         # Forensic-grade path parsing (Handles spaces, braces, and Tcl lists)
@@ -2526,7 +3526,8 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     messagebox.showwarning("Safety", "Critical Error: Rule file exceeds 5MB memory limit.")
                     return
 
-                content = p_obj.read_text(encoding='utf-8', errors='ignore')
+                # Sanitize null characters
+                content = p_obj.read_text(encoding='utf-8', errors='ignore').replace('\x00', ' ')
                 
                 # Full validation check
                 if self.check_editor_limits(content): return
@@ -2543,89 +3544,13 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         except Exception as e:
             self.update_status(f"DND Engine Error: {str(e)[:30]}", "error")
 
-    def find_balanced_closing_brace(self, text, start_index=0):
-        """Advanced brace balancer that respects all YARA literal types.
-        Handles: "double-quoted", 'single-quoted', /regex/ strings,
-        escaped quotes/backslashes, // and /* */ comments.
-        Braces inside any literal or comment are NOT counted.
-        """
-        bc = 0
-        found_first = False
-        in_dquote = False        # inside "..." string
-        in_squote = False        # inside '...' string
-        in_regex = False         # inside /.../ regex string
-        in_comment_single = False
-        in_comment_multi = False
-
-        def _count_preceding_backslashes(pos):
-            num = 0
-            j = pos - 1
-            while j >= 0 and text[j] == '\\':
-                num += 1
-                j -= 1
-            return num
-
-        i = start_index
-        while i < len(text):
-            char = text[i]
-
-            # ── Inside a double-quoted string ─────────────────────────────────
-            if in_dquote:
-                if char == '"' and _count_preceding_backslashes(i) % 2 == 0:
-                    in_dquote = False
-
-            # ── Inside a single-quoted string ────────────────────────────────
-            elif in_squote:
-                if char == "'" and _count_preceding_backslashes(i) % 2 == 0:
-                    in_squote = False
-
-            # ── Inside a /regex/ literal ──────────────────────────────────────
-            elif in_regex:
-                # A closing / that is not escaped ends the regex
-                if char == '/' and _count_preceding_backslashes(i) % 2 == 0:
-                    in_regex = False
-
-            # ── Inside a // comment ───────────────────────────────────────────
-            elif in_comment_single:
-                if char == '\n':
-                    in_comment_single = False
-
-            # ── Inside a /* */ comment ────────────────────────────────────────
-            elif in_comment_multi:
-                if char == '*' and i + 1 < len(text) and text[i+1] == '/':
-                    in_comment_multi = False
-                    i += 1
-
-            # ── Normal parsing context ────────────────────────────────────────
-            else:
-                if char == '"':
-                    in_dquote = True
-                elif char == "'":
-                    in_squote = True
-                elif char == '/':
-                    next_ch = text[i+1] if i + 1 < len(text) else ''
-                    if next_ch == '/':
-                        in_comment_single = True
-                        i += 1
-                    elif next_ch == '*':
-                        in_comment_multi = True
-                        i += 1
-                    else:
-                        # Detect YARA regex: look back for '=' (possibly with spaces)
-                        k = i - 1
-                        while k >= 0 and text[k] in ' \t':
-                            k -= 1
-                        if k >= 0 and text[k] == '=':
-                            in_regex = True
-                elif char == '{':
-                    bc += 1
-                    found_first = True
-                elif char == '}':
-                    bc -= 1
-                    if found_first and bc == 0:
-                        return i
-            i += 1
-        return -1
+    def _count_preceding_backslashes(self, text, pos):
+        num = 0
+        j = pos - 1
+        while j >= 0 and j < len(text) and text[j] == '\\':
+            num += 1
+            j -= 1
+        return num
 
 if __name__ == "__main__":
     app = YaraPlaygroundApp()
