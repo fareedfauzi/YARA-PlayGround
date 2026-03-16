@@ -99,15 +99,9 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.loader_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self.loader_idx = 0
         
-        # Determine available YARA modules to prevent "unknown module" errors
-        try:
-            available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
-        except:
-            available_mods = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+        available_mods = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
             
-        requested_mods = {
-            "pe", "elf", "macho", "dex", "dotnet", "magic", "hash", "math", "time", "archive", "cuckoo", "string", "console", "vt", "lnk", "androguard"
-        }
+        requested_mods = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
         # Only keep what is actually supported by the local YARA library
         self.standard_yara_imports = sorted(list(requested_mods.intersection(available_mods)))
         self.analysis_rules_path = ctk.StringVar(value="Select YARA rules directory...")
@@ -1262,7 +1256,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.lab_editor.tag_add("kw", f"1.0 + {match.start()} c", f"1.0 + {match.end()} c")
 
         # 2. Rule Modules & Types
-        intel_pattern = r'\b(pe|elf|math|hash|dotnet|macho|dex|magic|time|console|uint8|uint16|uint32|uint8be|uint16be|uint32be|int8|int16|int32|int8be|int16be|int32be)\b'
+        intel_pattern = r'\b(console|dotnet|elf|hash|math|pe|time|uint8|uint16|uint32|uint8be|uint16be|uint32be|int8|int16|int32|int8be|int16be|int32be)\b'
         for match in re.finditer(intel_pattern, content):
              self.lab_editor.tag_add("num", f"1.0 + {match.start()} c", f"1.0 + {match.end()} c")
 
@@ -1643,8 +1637,8 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # Rule Pattern Priority
         patterns = [
             ("com", r'//.*$|/\*[\s\S]*?\*/'),
-            ("kw", r'\b(rule|meta|strings|condition|import|include|global|private|all|any|of|them|and|or|not|at|in|filesize|entrypoint|startswith|endswith|contains|icase|fullword|wide|ascii|xor|base64|base64wide|nocase|pe|elf|math|hash|dotnet|macho|dex|magic|time|console|archive|cuckoo)\b'),
-            ("num", r'\b(0x[0-9a-fA-F]+|0b[01]+|\d+|true|false|pe|elf|math|hash|dotnet|macho|dex|magic|time|console|uint8|uint16|uint32|uint8be|uint16be|uint32be|int8|int16|int32|int8be|int16be|int32be)\b'),
+            ("kw", r'\b(rule|meta|strings|condition|import|include|global|private|all|any|of|them|and|or|not|at|in|filesize|entrypoint|startswith|endswith|contains|icase|fullword|wide|ascii|xor|base64|base64wide|nocase|console|dotnet|elf|hash|math|pe|time)\b'),
+            ("num", r'\b(0x[0-9a-fA-F]+|0b[01]+|\d+|true|false|console|dotnet|elf|hash|math|pe|time|uint8|uint16|uint32|uint8be|uint16be|uint32be|int8|int16|int32|int8be|int16be|int32be)\b'),
             ("var", r'[\$\#\@]\w*'),
             ("str", r'"(?:\\.|[^"\\])*"'),
             ("hex", r'\{[a-fA-F0-9\s\?\!\|]+\}'),
@@ -1662,7 +1656,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         try:
             # Dynamic module detection
             available_mods = set(yara.modules)
-            test_mods = ["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"]
+            test_mods = ["console", "dotnet", "elf", "hash", "math", "pe", "time"]
             active_mods = [m for m in test_mods if m in available_mods]
             import_count = len(active_mods)
             imports = '\n'.join([f'import "{m}"' for m in active_mods]) + '\n'
@@ -1756,7 +1750,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         error_msg = "Unknown validation error"
         try:
             available_mods = set(yara.modules) if hasattr(yara, 'modules') else set()
-            test_mods = ["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"]
+            test_mods = ["console", "dotnet", "elf", "hash", "math", "pe", "time"]
             active_imps = '\n'.join([f'import "{m}"' for m in test_mods if m in available_mods]) + '\n'
             yara.compile(source=active_imps + raw)
             messagebox.showinfo("AI Fix", "The YARA rule is already syntactically valid!")
@@ -2847,7 +2841,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         line_lookup_map = self._get_line_map(content)
         
         available_mods = set(yara.modules) if hasattr(yara, 'modules') else set()
-        test_mods = ["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console", "archive", "cuckoo", "string", "vt", "lnk", "androguard"]
+        test_mods = ["console", "dotnet", "elf", "hash", "math", "pe", "time"]
         # Force mandatory imports into detection to stabilize validation
         mandatory_set = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
         
@@ -3041,13 +3035,9 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
         all_imports: set = cast(set, parse_results['imports'])
         line_lookup_map = self._get_line_map(content)
         
-        # Dynamic module check for local environment
-        try:
-            available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
-        except:
-            available_mods = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+        available_mods = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
             
-        test_mods: list = ["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console", "archive", "cuckoo", "string", "vt", "lnk", "androguard"]
+        test_mods: list = ["console", "dotnet", "elf", "hash", "math", "pe", "time"]
         
         # 2.5. Mandatory Import Injection (Requested by User)
         mandatory_mods = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
@@ -3287,10 +3277,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
 
     def process_quarantine_fixes_gui(self, q_dir):
-        try:
-            available_mods = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
-        except:
-            available_mods = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
+        available_mods = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
             
         # User requested standard set
         requested_std = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
@@ -3351,7 +3338,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 # 1. Generic & Module Fixes
                 c = c.replace('\x00', '\\x00').replace('\\0', '\\x00')
                 c = c.replace('+?', '+').replace('*?', '*').replace('??', '?')
-                for mod in ["magic", "lnk", "pe", "dotnet", "elf", "macho"]:
+                for mod in ["console", "dotnet", "elf", "hash", "math", "pe", "time"]:
                     if f'{mod}.' in c and f'import "{mod}"' not in c: c = f'import "{mod}"\n' + c
                 
                 # Mask failing fields
@@ -3489,12 +3476,7 @@ class YaraPlaygroundApp(ctk.CTk, TkinterDnD.DnDWrapper):
                         f_path.unlink()
                         self.after(0, lambda f=f_path.name: self.log_col(f"Deleted empty file after removal: {f}", "success"))
                     else:
-                        # Re-inject imports and normalize
-                        try:
-                            available = set(yara.modules) if hasattr(yara, 'modules') else set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
-                        except:
-                            available = set(["pe", "elf", "math", "hash", "dotnet", "macho", "dex", "magic", "time", "console"])
-                            
+                        available = {"console", "dotnet", "elf", "hash", "math", "pe", "time"}
                         disco_set = set(parse_results.get('imports', []))
                         std_set = set(self.standard_yara_imports)
                         all_needed_imps = std_set | disco_set
