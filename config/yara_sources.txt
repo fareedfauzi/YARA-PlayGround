@@ -2,23 +2,23 @@
 # Add GitHub repository URLs, raw .yar file URLs, or .zip URLs here.
 # Lines starting with # are ignored.
 
+# https://github.com/Yara-Rules/rules
 https://github.com/anyrun/YARA
-https://github.com/AlienVault-Labs/AlienVaultLabs
+# https://github.com/AlienVault-Labs/AlienVaultLabs
 https://github.com/bartblaze/Yara-rules
-https://github.com/codewatchorg/Burp-Yara-Rules
 https://github.com/jipegit/yara-rules-public
 https://github.com/securitymagic/yara
 https://github.com/t4d/PhishingKit-Yara-Rules
-https://github.com/mthcht/ThreatHunting-Keywords-yara-rules
 https://github.com/tjnel/yara_repo
-https://github.com/VectraThreatLab/reyara
-https://github.com/fr0gger/Yara-Unprotect
+# https://github.com/VectraThreatLab/reyara
+# YARA Unprotect too noisy for malware scanner
+# https://github.com/fr0gger/Yara-Unprotect
 https://github.com/stvemillertime/ConventionEngine
-https://github.com/filescanio/fsYara
-https://github.com/h3x2b/yara-rules
+# https://github.com/filescanio/fsYara
+# https://github.com/h3x2b/yara-rules
 https://github.com/imp0rtp3/yara-rules
 https://github.com/intezer/yara-rules
-https://github.com/InQuest/yara-rules
+# https://github.com/InQuest/yara-rules
 https://github.com/jeFF0Falltrades/YARA-Signatures
 https://github.com/kevthehermit/YaraRules
 https://github.com/Hestat/lw-yara
@@ -31,3 +31,4 @@ https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-f
 https://gist.githubusercontent.com/Neo23x0/f1bb645a4f715cb499150c5a14d82b44/raw/iddqd.yar
 https://gist.githubusercontent.com/pedramamini/c586a151a978f971b70412ca4485c491/raw/XProtect.yara
 https://yaraify.abuse.ch/yarahub/yaraify-rules.zip
+https://raw.githubusercontent.com/mthcht/ThreatHunting-Keywords-yara-rules/refs/heads/main/yara_rules/all.yara
